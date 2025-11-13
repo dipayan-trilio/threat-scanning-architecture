@@ -6,9 +6,12 @@
 ```mermaid
 %%{init: {'theme':'base', 'themeVariables': { 'fontSize':'16px', 'fontFamily':'arial', 'clusterBkg':'#f9f9f9', 'clusterBorder':'#333'}}}%%
 flowchart TB
-    Start([User Creates Targets])
     
-    subgraph Target_Setup["<b>TARGET SETUP PHASE</b>"]
+    subgraph WhiteBox[" "]
+        direction TB
+        Start([User Creates Targets])
+        
+        subgraph Target_Setup["<b>TARGET SETUP PHASE</b>"]
         CreateBT[Create BackupTarget CR<br/>ReadOnly, NFS/S3<br/>ClusterScoped]
         CreateRT[Create ReportingTarget CR<br/>S3 Compatible Only<br/>annotation: trilio.io/reporting-target: true]
         TC[Target Controller]
@@ -160,6 +163,9 @@ flowchart TB
     ReportPath --> UpdateStatus
     UpdateStatus --> End
     
+    end
+    
+    style WhiteBox fill:#ffffff,stroke:#2c3e50,stroke-width:5px
     style Start fill:#4A90E2,stroke:#2E5C8A,stroke-width:3px,color:#fff
     style End fill:#50C878,stroke:#2D7A4A,stroke-width:3px,color:#fff
     style PollingEnd fill:#3498DB,stroke:#2874A6,stroke-width:3px,color:#fff
@@ -178,6 +184,7 @@ flowchart TB
     style Scan_Execution fill:#D5F4E6,stroke:#28B463,stroke-width:3px,color:#000
     style Reporting_Phase fill:#FEF5E7,stroke:#D68910,stroke-width:3px,color:#000
 ```
+
 
 
 
@@ -355,6 +362,7 @@ flowchart TB
 
 5) If any ScanInstance CR is found for which the backup does not exist, the scanInstance CR is deleted.
 
+---
 
 - NOTE: For non-VM backups, the scanInstance CR contains `trilio.io/vm-workload: false`. If the annotation does not exist, it is considered VM backup.
 
@@ -437,6 +445,7 @@ Consider a BackupTarget with the following configuration:
   - **Backups 9-10: `scanConfig.enabled: true, scanOldBackups: false`** (scanning enabled recently for last 2 backups)
   - New backup-D-11 created, with `scanConfig.enabled: true, scanOldBackups: true`
 
+---
 
 #### Processing BackupPlan-A (scanEnabled: false)
 
@@ -500,6 +509,8 @@ Consider a BackupTarget with the following configuration:
 
 
 **Explanation:** With `scanOldBackups: true`, the poller lists all backups and attempts to process all unprocessed backups and creates scanInstance CR
+
+---
 
 #### Processing BackupPlan-D (scanEnabled: true, scanOldBackups: false)
 
