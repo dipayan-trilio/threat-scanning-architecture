@@ -83,7 +83,7 @@ flowchart TB
     
     subgraph Reporting_Phase["<b>REPORTING PHASE</b>"]
         UploadS3[Upload to ReportingTarget<br/>via S3 API]
-        ReportPath[reports/instance-id/<br/>backup-target-uid/<br/>backupPlan-uid/backup-uid/<br/>report.json]
+        ReportPath[reports/instance-id/<br/>backup-target-uid/<br/>backupPlan-uid/backup-uid/<br/>timestamp/report.json]
         UpdateStatus[Update ScanInstance Status<br/>with Report Location]
     end
     
@@ -394,7 +394,7 @@ apiVersion: threatscanning.trilio.io/v1
   spec:
     ...
   status:
-    report: reports/instance-id/backup-target-uid/backupPlan-uid/backup-uid/report.json
+    report: reports/instance-id/backup-target-uid/backupPlan-uid/backup-uid/scan-instance-creation-timestamp/report.json  # timestamp is needed if multiple scans are done for a backup(automated and on-demand)
     status: Completed
 ```
 
@@ -415,7 +415,8 @@ apiVersion: threatscanning.trilio.io/v1
 |---- backup-target-uid/
 |---------- backupPlan-uid/
 |---------------- backup-uid/
-|------------------ report.json
+|------------------ scan-instance-creation-timestamp/
+|------------------------------------------ report.json
 ```
 
 ## Polling Examples
