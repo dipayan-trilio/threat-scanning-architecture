@@ -268,7 +268,8 @@ flowchart TB
 
   - Once a target is created, a validation phase will run which checks if required operations can be performed on the target. 
 
-  - ⚠ ReportingTarget and BackupTarget cannot point to same s3 bucket, as this might lead to backup data corruption due to varying implementation of data storage.
+> [!WARNING]
+> ReportingTarget and BackupTarget cannot point to same s3 bucket, as this might lead to backup data corruption due to varying implementation of data storage.
 
 - TargetController will create a cronjob per backupTarget which will run at a fixed interval of 6 hrs by default and will poll the backupTarget for new backups. This cronjob will run poller pod.
 
@@ -362,9 +363,8 @@ flowchart TB
 
 5) If any ScanInstance CR is found for which the backup does not exist, the scanInstance CR is deleted.
 
----
-
-- NOTE: For non-VM backups, the scanInstance CR contains `trilio.io/vm-workload: false`. If the annotation does not exist, it is considered VM backup.
+> [!NOTE]
+> For non-VM backups, the scanInstance CR contains `trilio.io/vm-workload: false`. If the annotation does not exist, it is considered VM backup.
 
 
 #### ScanInstance workflow
