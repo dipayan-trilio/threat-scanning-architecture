@@ -514,9 +514,9 @@ Consider a BackupTarget with the following configuration:
 
 #### Processing BackupPlan-D (scanEnabled: true, scanOldBackups: false)
 
-##### Polling 1
+**Polling 1**
 
-**Flow:**
+##### Flow:
 1. Iterate over BackupPlan-D
 2. Fetch latest backup: `backup-D-10`
 4. **Scenario 1 Logic Applies**
@@ -537,11 +537,13 @@ Consider a BackupTarget with the following configuration:
 
 **ScanInstances Created:** 2
 
-##### Polling 2
+---
+
+**Polling 2**
 
 New backup-D-11 created, with `scanConfig.enabled: true, scanOldBackups: true`
 
-**Flow:**
+##### Flow:
 1. Iterate over BackupPlan-D
 2. Fetch latest backup: `backup-D-11`
 3. Read `backupplan.json` for `backup-D-11` → `scanConfig.enabled: true, scanOldBackups: true`
