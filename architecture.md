@@ -24,6 +24,7 @@ flowchart TB
         PollerPod[Poller Pod Starts]
         CheckRT{ReportingTarget<br/>Available?}
         ErrorState[Pod Error State]
+        PeriodicCleanup[Periodic Cleanup:<br/>Delete ScanInstance CRs<br/>for non-existent backups]
         GetTime[Fetch lastSuccessfulTime<br/>from Cronjob or default 6hrs]
         
         subgraph Backup_Discovery["Backup Discovery"]
@@ -46,10 +47,7 @@ flowchart TB
     
     subgraph Scenario1["<b>SCENARIO 1: Latest Backup Only</b>"]
         CheckSI1{ScanInstance<br/>exists?}
-        ReadMeta1[Read tvk-meta.json<br/>for instance-id]
-        MountMD1[Mount metadata-snapshot.qcow2<br/>Read metadata.json]
-        CheckVM1{VM Workload<br/>present?}
-        CreateSI1[Create ScanInstance CR<br/>with vm-workload annotation]
+        CreateSI1[Create ScanInstance CR]
         FetchPrev[Fetch Previous Backup]
         CheckPrevScan{scanEnabled<br/>in previous?}
         CheckPrevSI{ScanInstance<br/>exists for previous?}
@@ -59,20 +57,21 @@ flowchart TB
         ListSI[List all ScanInstance CRs<br/>for BackupPlan]
         ListAllBU[List all Backups<br/>in BackupTarget]
         CompareList[Compare and Create<br/>Unprocessed Backup List]
-        IterateUnproc[Iterate Unprocessed<br/>Backups]
-        ReadMeta2[Read tvk-meta.json<br/>for instance-id]
-        MountMD2[Mount metadata-snapshot.qcow2<br/>Read metadata.json]
-        CheckVM2{VM Workload<br/>present?}
-        CreateSI2[Create ScanInstance CR<br/>with vm-workload annotation]
+        CreateSI2[Create ScanInstance CR]
     end
     
-    subgraph ScanInstance_Phase["<b>SCANINSTANCE PROCESSING</b>"]
+    subgraph PreScanning_Phase["<b>PRESCANNING PHASE</b>"]
         SIC[ScanInstance Controller]
+        CreatePreScan[Create PreScan Job]
+        PreScanValidate[Validate BackupTarget<br/>and Backup Path]
+        DetermineType[Determine Backup Type<br/>TVK/TVO]
+        ReadMetadata[Read tvk-meta.json<br/>Parse backup structure<br/>Mount & read metadata.json]
+        UpdateCRLabels[Update CR with<br/>Labels & Annotations<br/>vm-workload status]
         CheckVMAnnot{trilio.io/vm-workload<br/>= false?}
-        CreateJob[Create ScanJob<br/>K8s Job]
     end
     
     subgraph Scan_Execution["<b>SCAN EXECUTION PHASE</b>"]
+        CreateJob[Create ScanJob<br/>K8s Job]
         JobMount[Mount BackupTarget]
         ValidatePath[Validate Backup Path]
         ScanEngine[Execute Scanning Engine]
@@ -103,7 +102,8 @@ flowchart TB
     PollerPod --> CheckRT
     CheckRT -->|No| ErrorState
     ErrorState --> PollingEnd
-    CheckRT -->|Yes| GetTime
+    CheckRT -->|Yes| PeriodicCleanup
+    PeriodicCleanup --> GetTime
     GetTime -->|NFS Target| MountBTNFS
     GetTime -->|S3 Target| ListS3
     MountBTNFS --> ListNFS
@@ -117,27 +117,18 @@ flowchart TB
     
     CheckOld -->|False| CheckSI1
     CheckSI1 -->|Exists| NextBP
-    CheckSI1 -->|Not Exists| ReadMeta1
-    ReadMeta1 --> MountMD1
-    MountMD1 --> CheckVM1
-    CheckVM1 -->|Yes| CreateSI1
-    CheckVM1 -->|No| CreateSI1
+    CheckSI1 -->|Not Exists| CreateSI1
     CreateSI1 --> FetchPrev
     FetchPrev --> CheckPrevScan
     CheckPrevScan -->|Disabled| NextBP
     CheckPrevScan -->|Enabled| CheckPrevSI
     CheckPrevSI -->|Exists| NextBP
-    CheckPrevSI -->|Not Exists| ReadMeta1
+    CheckPrevSI -->|Not Exists| CreateSI1
     
     CheckOld -->|True| ListSI
     ListSI --> ListAllBU
     ListAllBU --> CompareList
-    CompareList --> IterateUnproc
-    IterateUnproc --> ReadMeta2
-    ReadMeta2 --> MountMD2
-    MountMD2 --> CheckVM2
-    CheckVM2 -->|Yes| CreateSI2
-    CheckVM2 -->|No| CreateSI2
+    CompareList --> CreateSI2
     CreateSI2 --> NextBP
     
     NextBP -->|Yes| FetchLatest
@@ -145,9 +136,14 @@ flowchart TB
     
     CreateSI1 --> SIC
     CreateSI2 --> SIC
-    SIC --> CheckVMAnnot
-    CheckVMAnnot -->|Yes| End
-    CheckVMAnnot -->|No/Not Set| CreateJob
+    SIC --> CreatePreScan
+    CreatePreScan --> PreScanValidate
+    PreScanValidate --> DetermineType
+    DetermineType --> ReadMetadata
+    ReadMetadata --> UpdateCRLabels
+    UpdateCRLabels --> CheckVMAnnot
+    CheckVMAnnot -->|Yes/Non-VM| End
+    CheckVMAnnot -->|No/VM Workload| CreateJob
     
     CreateJob --> JobMount
     JobMount --> ValidatePath
@@ -170,6 +166,7 @@ flowchart TB
     style End fill:#50C878,stroke:#2D7A4A,stroke-width:3px,color:#fff
     style PollingEnd fill:#3498DB,stroke:#2874A6,stroke-width:3px,color:#fff
     style ErrorState fill:#E74C3C,stroke:#A93226,stroke-width:2px,color:#fff
+    style PeriodicCleanup fill:#FFA07A,stroke:#FF6347,stroke-width:2px,color:#000
     style CreateBT fill:#9B59B6,stroke:#6C3A80,stroke-width:2px,color:#fff
     style CreateRT fill:#F39C12,stroke:#C87F0A,stroke-width:2px,color:#fff
     style CreateSI1 fill:#E74C3C,stroke:#A93226,stroke-width:2px,color:#fff
@@ -180,7 +177,7 @@ flowchart TB
     style Polling_Phase fill:#D6EAF8,stroke:#2E86C1,stroke-width:3px,color:#000
     style Scenario1 fill:#FFE5E5,stroke:#CB4335,stroke-width:3px,color:#000
     style Scenario2 fill:#FFF5E5,stroke:#E67E22,stroke-width:3px,color:#000
-    style ScanInstance_Phase fill:#FADBD8,stroke:#CB4335,stroke-width:3px,color:#000
+    style PreScanning_Phase fill:#E8DAEF,stroke:#8E44AD,stroke-width:3px,color:#000
     style Scan_Execution fill:#D5F4E6,stroke:#28B463,stroke-width:3px,color:#000
     style Reporting_Phase fill:#FEF5E7,stroke:#D68910,stroke-width:3px,color:#000
 ```
@@ -277,6 +274,14 @@ flowchart TB
 
 - Checks if reportingTarget is created and in available state. If not available, the polling cycle ends with pods in error state.
 
+##### Stale report cleanup
+
+- For s3 uses api to get all backupplans and for nfs target, the target is mounted first and find is used to list backups. For each backupplan, lists all backups. 
+- Lists scanInstance CRs for the backupplan and compares the list. 
+- For scanInstance CR if the backup directory does not exist, the scanInstance CR is deleted
+
+---
+
 - Mounts the backupTarget
 
 - Uses s3 api or find to get list of backupplans for which new backups have been created since last successful cronjob run. If no last run has been done, consider last 6 hours.
@@ -287,26 +292,15 @@ flowchart TB
   
 ##### Scenario 1: scanning is enabled and scanOldBackups is false for latest backup's backupplan
 
-1) Checks if a scanInstance for the latest backup exists. If scanInstance does not exists, then Checks the backupplan.json or cluster-backupplan.json for `scanEnabled` and `scanOldBackups(only for latest backup)`. (If for latest backup, scanInstance exists we assume previous backups were processed) 
+1) Checks if a scanInstance for the latest backup exists. If scanInstance does not exists, then Checks the backupplan.json or cluster-backupplan.json for `scanEnabled` and `scanOldBackups(only for latest backup)`. (If for latest backup, scanInstance exists we assume previous backups were processed). Also checks the backup.json to verify that the backup is in available state else the backup is ignored.
 
-2) Reads tvk-meta.json, to fetch the TVK instance uid for the latest backup
-
-3) Mounts the metadata-snapshot.qcow2 and reads the metadata.json to find if any VM related workloads are present like VM/VMI/VMPool 
-
-4) Creates a scanInstance CR for the backup.
+2) Creates a scanInstance CR for the backup.
  ```yaml
   # ScanInstance spec
   apiVersion: threatscanning.trilio.io/v1
   kind: ScanInstance
   metadata:
     name: random-uuid
-    labels:
-      trilio.io/instance-id: tvk-instance-id | tvo-instance-id
-      trilio.io/backup-target: target-uid
-      trilio.io/backupplan: backupplan-uid
-      trilio.io/backup: backup-uid
-    annotations:
-      trilio.io/vm-workload: true|false # This will be set to false if the backup does not contain any VM workload
   spec:
     backupTarget:
       apiVersion: threatscanning.trilio.io/v1
@@ -317,25 +311,71 @@ flowchart TB
     backupRef:
       uid: backup-uid
       path: /path/to/backup
-    type: TVK|TVO  # Type of backup to be scanned. Required further down the line for parsing backup directory structure
 
   ```
 
-5) Fetches the previous backup created and repeats step 1-3, until for the backup fetched in backupplan.json:
+3) Fetches the previous backup created and repeats step 1-2, until for the backup fetched in backupplan.json:
   - scanEnabled is false, or
   - scanInstance CR exists, denoting the backup has already been scanned
 
 ##### Scenario 2: scanning is enabled and scanOldBackups is true for latest backup's backupplan
 
-1) Checks if a scanInstance for the backup exists. If scanInstance does not exists, then Checks the backupplan.json or cluster-backupplan.json for `scanEnabled` and `scanOldBackups(only for latest backup, which will be true here)`. 
+1) Checks if a scanInstance for the backup exists. If scanInstance does not exists, then Checks the backupplan.json or cluster-backupplan.json for `scanEnabled` and `scanOldBackups(only for latest backup, which will be true here)`. Then fetches the latest backup's backup.json and checks if the backup is in available state. If not excludes the latest backup when creating the CR.
 
-2) List all ScanInstance CRs for this backupplan/cluster-backupplan. Lists all backups/clusterbackups for the backupplan/cluster-backupplan in the backupTarget. Compares both lists and creates list of unprocessed backups for which scanInstance CR does not exist.
+2) List all ScanInstance CRs for this backupplan/cluster-backupplan. Lists all backups/clusterbackups for the backupplan/cluster-backupplan in the backupTarget. Compares both lists and creates list of unprocessed backups for which scanInstance CR does not exist. (excludes latest backup if it is not available)
 
-3) For each of the backup, reads tvk-meta.json for instance-id and mounts the metadata-snapshot.qcow2 and reads the metadata.json to find if any VM related workloads are present like VM/VMI/VMPool 
-
-4) Creates a scanInstance CR for the backup.
+3) Creates a scanInstance CR for the backup.
  ```yaml
   # ScanInstance spec
+  apiVersion: threatscanning.trilio.io/v1
+  kind: ScanInstance
+  metadata:
+    name: random-uuid
+  spec:
+    backupTarget:
+      apiVersion: threatscanning.trilio.io/v1
+      kind: Target
+      name: backup-target
+      resourceVersion: "2285"
+      uid: 4d4e8073-9741-4b32-abb1-a4e4c759af76
+    backupRef:
+      uid: backup-uid
+      path: /path/to/backup
+
+  ```
+
+4) If any ScanInstance CR is found for which the backup does not exist, the scanInstance CR is deleted.
+
+
+#### ScanInstance workflow
+
+##### ScanInstance Creation
+
+- ScanInstance Controller parse the created ScanInstance and 
+  - preScan job will run per scanInstance.
+  - a k8s job will be created(will be further referred as ScanJob) with targetConfig and backupRef.
+
+- PreScan Job:
+  1) Validates the backupTarget is in available state
+  2) Validates the backup path exists
+  3) Determines the backup type - TVK/TVO and updates it in the status of CR
+  4) Reads tvk-meta.json, to fetch the TVK instance uid
+  5) Parses the backup path directory structure to figure out backup and backupplan UID (for TVK)
+  6) Mounts the metadata-snapshot.qcow2 and reads the metadata.json to find if any VM related workloads are present like VM/VMI/VMPool
+  7) For TVO, 4-6 will differ.
+  8) Updates following labels and annotations for the CR,
+  ```yaml
+  labels:
+      trilio.io/instance-id: tvk-instance-id | tvo-instance-id
+      trilio.io/backup-target: target-uid
+      trilio.io/backupplan: backupplan-uid
+      trilio.io/backup: backup-uid
+  annotations:
+    trilio.io/vm-workload: false|true
+  ```
+
+  ```yaml
+  # ScanInstance spec after prescan completed successfully
   apiVersion: threatscanning.trilio.io/v1
   kind: ScanInstance
   metadata:
@@ -357,21 +397,9 @@ flowchart TB
     backupRef:
       uid: backup-uid
       path: /path/to/backup
-    type: TVK|TVO  # Type of backup to be scanned. Required further down the line for parsing backup directory structure
-
+  status:
+    type: TVK|TVO
   ```
-
-5) If any ScanInstance CR is found for which the backup does not exist, the scanInstance CR is deleted.
-
-> [!NOTE]
-> For non-VM backups, the scanInstance CR contains `trilio.io/vm-workload: false`. If the annotation does not exist, it is considered VM backup.
-
-
-#### ScanInstance workflow
-
-##### ScanInstance Creation
-
-- ScanInstance Controller parse the created ScanInstance and a k8s job will be created(will be further referred as ScanJob) with targetConfig and backupRef.
 
 - The controller doesnot process, scanInstance CR with `trilio.io/vm-workload: false`. If in future, the scanning engine supports container backup scanning, a migration can be used to patch these CRs to initiate processing.
 
@@ -379,8 +407,6 @@ flowchart TB
   - BackupTarget will be mounted.
   -  Validation stage:
       - It will validate the backup path. 
-      - TBD: It will check if `INSTANCE_ID` env is set. If not set, it will read the `tvk-meta.json` to fetch the instance-id. (This scenario happens during on-demand scanning where user does not provide `trilio.io/instance-id` annotation).
-      - TBD: If `trilio.io/vm-workload`, is not set on CR, here we need to check if it is VM backup else scanning will not be started
   - The scanning engine will be executed which will scan the memory dump and backup qcow2 and generate json reports.
   - The json reports will be uploaded to ReportingTarget using s3 api.
 
@@ -401,11 +427,6 @@ apiVersion: threatscanning.trilio.io/v1
 ##### ScanInstance Deletion
 
 - The controller runs a job which cleans up the reports for the scanInstance
-
-#### TBD: Periodic Cleanup
-
-- ScanInstance Controller will periodically run a cleanup job which validates if a backup is present or have been deleted by comparing already created ScanInstance and checking if the backupPath exists or not.
-- If a backup is deleted, the cleanup job will send a delete request for the ScanInstance CR. The Controller will run job for the report deletion.
 
 #### Reporting Structure
 
