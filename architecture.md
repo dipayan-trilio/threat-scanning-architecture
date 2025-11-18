@@ -274,11 +274,11 @@ flowchart TB
 
 - Checks if reportingTarget is created and in available state. If not available, the polling cycle ends with pods in error state.
 
-##### Stale report cleanup
+##### Stale ScanInstance cleanup
 
 - For s3 uses api to get all backupplans and for nfs target, the target is mounted first and find is used to list backups. For each backupplan, lists all backups. 
 - Lists scanInstance CRs for the backupplan and compares the list. 
-- For scanInstance CR if the backup directory does not exist, the scanInstance CR is deleted
+- For scanInstance CR if the backup directory does not exist, the scanInstance CR is deleted. The reports will not be cleaned up from the reporting Target.
 
 ---
 
