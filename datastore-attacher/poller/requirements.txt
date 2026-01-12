@@ -1,0 +1,10 @@
+# Kubernetes client
+kubernetes>=28.1.0
+
+# AWS S3 client (already in parent requirements.txt)
+boto3>=1.26.0
+botocore>=1.29.0
+
+# Note: Other dependencies are inherited from parent datastore-attacher/requirements.txt
+# This file only lists additional dependencies specific to the poller
+

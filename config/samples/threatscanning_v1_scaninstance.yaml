@@ -1,0 +1,13 @@
+apiVersion: threatscanning.trilio.io/v1
+kind: ScanInstance
+metadata:
+  name: sample-scan-instance
+spec:
+  backupTarget:
+    apiVersion: threatscanning.trilio.io/v1
+    kind: Target
+    name: test-s3-target-1
+  backupRef:
+    uid: "backup-uid-12345"
+    path: "/backups/sample-backup"
+

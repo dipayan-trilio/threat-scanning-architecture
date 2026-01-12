@@ -1,0 +1,40 @@
+---
+# ValidatingWebhookConfiguration for testing with ngrok
+# Usage:
+#   1. Run: ngrok http 9443
+#   2. Replace YOUR_NGROK_URL below with your ngrok URL (e.g., abc123.ngrok-free.app)
+#   3. Apply: kubectl apply -f config/webhook/manifests-ngrok.yaml
+#   4. Run controller locally: go run cmd/manager/main.go --enable-webhook=true --webhook-port=9443
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: threat-scanning-validating-webhook
+  labels:
+    app.kubernetes.io/name: threat-scanning
+    app.kubernetes.io/part-of: threat-scanning
+webhooks:
+  - name: target-validation.threatscanning.trilio.io
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      # Use URL instead of service for external webhook
+      url: https://prowtestvel-webhook.ultrahook.com/validate-threatscanning-trilio-io-v1-target
+      # No caBundle needed - ngrok uses valid public TLS certs
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    rules:
+      - apiGroups:
+          - threatscanning.trilio.io
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - targets
+        scope: "Cluster"
+    sideEffects: None
+    timeoutSeconds: 10
+

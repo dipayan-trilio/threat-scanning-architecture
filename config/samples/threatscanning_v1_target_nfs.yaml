@@ -1,0 +1,15 @@
+apiVersion: threatscanning.trilio.io/v1
+kind: Target
+metadata:
+  name: nfs-backup-target
+  labels:
+    app.kubernetes.io/name: threat-scanning
+    app.kubernetes.io/part-of: threat-scanning
+spec:
+  type: NFS
+  vendor: Other
+  nfsCredentials:
+    nfsExport: "192.168.1.100:/mnt/backups"
+    nfsOptions: "rw,hard,intr"
+  thresholdCapacity: 500Gi
+

@@ -1,0 +1,52 @@
+---
+# Create a selfsigned Issuer in order to create a root CA certificate for
+# signing webhook serving certificates
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: selfsigned-issuer
+  namespace: threat-scanning-system
+spec:
+  selfSigned: {}
+---
+# Generate a CA Certificate used to sign certificates for the webhook
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: root-certificate
+  namespace: threat-scanning-system
+spec:
+  secretName: root-secret
+  duration: 43800h # 5y
+  issuerRef:
+    name: selfsigned-issuer
+  commonName: "ca.webhook.threat-scanning"
+  isCA: true
+---
+# Create an Issuer that uses the above generated CA certificate to issue certs
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: root-issuer
+  namespace: threat-scanning-system
+spec:
+  ca:
+    secretName: root-secret
+---
+# Finally, generate a serving certificate for the webhook to use
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: webhook-server-cert
+  namespace: threat-scanning-system
+spec:
+  secretName: webhook-server-cert
+  duration: 8760h # 1y
+  issuerRef:
+    name: root-issuer
+  dnsNames:
+  - threat-scanning-webhook-service
+  - threat-scanning-webhook-service.threat-scanning-system
+  - threat-scanning-webhook-service.threat-scanning-system.svc
+  - threat-scanning-webhook-service.threat-scanning-system.svc.cluster.local
+

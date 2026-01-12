@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: s3-credentials
+  namespace: threat-scanning-system
+type: Opaque
+stringData:
+  accessKey: "YOUR_ACCESS_KEY"
+  secretKey: "YOUR_SECRET_KEY"
+---
+apiVersion: threatscanning.trilio.io/v1
+kind: Target
+metadata:
+  name: s3-backup-target
+  labels:
+    app.kubernetes.io/name: threat-scanning
+    app.kubernetes.io/part-of: threat-scanning
+spec:
+  type: ObjectStore
+  vendor: AWS
+  objectStoreCredentials:
+    url: "https://s3.amazonaws.com"
+    bucketName: "my-backup-bucket"
+    region: "us-east-1"
+    credentialSecret:
+      name: s3-credentials
+      namespace: threat-scanning-system
+

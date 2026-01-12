@@ -1,0 +1,16 @@
+---
+apiVersion: threatscanning.trilio.io/v1
+kind: Target
+metadata:
+  name: nfs-backup-target
+spec:
+  type: NFS
+  vendor: Other
+  nfsCredentials:
+    # NFS server IP or hostname
+    # NFS export path
+    nfsExport: "34.66.17.160:/src/nfs/dipayan"
+    # NFS mount options (optional)
+    nfsOptions: "nfsvers=4"
+  # Optional: Maximum threshold capacity for the target
+

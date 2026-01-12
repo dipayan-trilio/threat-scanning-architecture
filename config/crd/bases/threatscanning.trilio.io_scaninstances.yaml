@@ -1,0 +1,172 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: scaninstances.threatscanning.trilio.io
+spec:
+  group: threatscanning.trilio.io
+  names:
+    kind: ScanInstance
+    listKind: ScanInstanceList
+    plural: scaninstances
+    singular: scaninstance
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.backupTarget.name
+      name: BackupTarget
+      type: string
+    - jsonPath: .spec.backupRef.path
+      name: BackupPath
+      type: string
+    - jsonPath: .status.type
+      name: Type
+      type: string
+    - jsonPath: .status.status
+      name: Status
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: ScanInstance represents a single scan operation for a backup.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ScanInstanceSpec defines the specification of a ScanInstance.
+            properties:
+              backupRef:
+                description: BackupRef is the reference to the backup
+                properties:
+                  path:
+                    description: Path is the path to the backup
+                    type: string
+                  uid:
+                    description: UID is the UID of the backup
+                    type: string
+                required:
+                - path
+                type: object
+              backupTarget:
+                description: BackupTarget is the reference to the backup target
+                properties:
+                  apiVersion:
+                    description: APIVersion is the API version of the target
+                    type: string
+                  kind:
+                    description: Kind is the kind of the target
+                    type: string
+                  name:
+                    description: Name is the name of the target
+                    type: string
+                  resourceVersion:
+                    description: ResourceVersion is the resource version of the target
+                    type: string
+                  uid:
+                    description: UID is the UID of the target
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - backupRef
+            - backupTarget
+            type: object
+          status:
+            description: ScanInstanceStatusSpec defines the observed state of ScanInstance
+            properties:
+              condition:
+                description: Condition is the current condition of a scan instance.
+                items:
+                  description: ScanInstanceCondition specifies the current condition
+                    of a scan instance.
+                  properties:
+                    phase:
+                      allOf:
+                      - enum:
+                        - Queued
+                        - PreScan
+                        - Scanning
+                      - enum:
+                        - Queued
+                        - PreScan
+                        - Scanning
+                      description: Phase defines the current phase of the scan.
+                      type: string
+                    reason:
+                      description: A brief message indicating details about why the
+                        component is in this condition.
+                      type: string
+                    status:
+                      allOf:
+                      - enum:
+                        - InProgress
+                        - Available
+                        - Unavailable
+                        - Completed
+                        - Failed
+                      - enum:
+                        - InProgress
+                        - Completed
+                        - Failed
+                      description: Status is the status of the condition.
+                      type: string
+                    timestamp:
+                      description: Timestamp is the time a condition occurred.
+                      format: date-time
+                      type: string
+                  type: object
+                type: array
+              report:
+                description: Report is the path to the scan report
+                type: string
+              status:
+                allOf:
+                - enum:
+                  - Queued
+                  - InProgress
+                  - Completed
+                  - Failed
+                - enum:
+                  - Queued
+                  - InProgress
+                  - Completed
+                  - Failed
+                description: Status is the overall status of the scan instance
+                type: string
+              type:
+                allOf:
+                - enum:
+                  - TVK
+                  - TVO
+                - enum:
+                  - TVK
+                  - TVO
+                description: Type is the type of backup (TVK or TVO)
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

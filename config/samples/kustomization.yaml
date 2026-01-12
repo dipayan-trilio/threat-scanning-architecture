@@ -1,0 +1,7 @@
+## Append samples you want in your CSV to this file as resources ##
+resources:
+- threatscanning_v1_target_nfs.yaml
+- threatscanning_v1_target_s3.yaml
+- threatscanning_v1_target_reporting.yaml
+#+kubebuilder:scaffold:manifestskustomizesamples
+
