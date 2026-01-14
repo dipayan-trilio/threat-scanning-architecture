@@ -1,0 +1,15 @@
+# Target Poller Requirements
+
+# Kubernetes client
+kubernetes>=28.1.0
+
+# AWS S3 client (for S3 targets)
+boto3>=1.34.0
+botocore>=1.34.0
+
+# Date parsing
+python-dateutil>=2.8.2
+
+# Note: mount_utility dependencies are inherited from parent project
+
+
