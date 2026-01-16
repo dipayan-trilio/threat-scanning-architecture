@@ -1,0 +1,206 @@
+{
+    "kind": "BackupPlan",
+    "apiVersion": "triliovault.trilio.io/v1",
+    "metadata": {
+        "name": "dipayan-vm",
+        "namespace": "dipayan",
+        "uid": "85976c1c-a07b-4b62-8d49-fac13839a878",
+        "resourceVersion": "2611169",
+        "generation": 2,
+        "creationTimestamp": "2026-01-16T09:42:01Z",
+        "annotations": {
+            "triliovault.trilio.io/instance-id": "0cd04d1b-ef02-4665-ab7b-04f4ae4254ba",
+            "triliovault.trilio.io/processed": "updater"
+        },
+        "finalizers": [
+            "backupplan-delete-finalizer"
+        ],
+        "managedFields": [
+            {
+                "manager": "web-backend",
+                "operation": "Update",
+                "apiVersion": "triliovault.trilio.io/v1",
+                "time": "2026-01-16T09:42:00Z",
+                "fieldsType": "FieldsV1",
+                "fieldsV1": {
+                    "f:spec": {
+                        ".": {},
+                        "f:backupConfig": {
+                            ".": {},
+                            "f:target": {}
+                        },
+                        "f:backupPlanComponents": {
+                            ".": {},
+                            "f:customSelector": {
+                                ".": {},
+                                "f:selectResources": {
+                                    ".": {},
+                                    "f:gvkSelector": {}
+                                }
+                            }
+                        },
+                        "f:backupPlanFlags": {
+                            ".": {},
+                            "f:skipImageBackup": {}
+                        },
+                        "f:snapshotConfig": {
+                            ".": {},
+                            "f:target": {}
+                        }
+                    }
+                }
+            },
+            {
+                "manager": "manager",
+                "operation": "Update",
+                "apiVersion": "triliovault.trilio.io/v1",
+                "time": "2026-01-16T09:42:01Z",
+                "fieldsType": "FieldsV1",
+                "fieldsV1": {
+                    "f:metadata": {
+                        "f:finalizers": {
+                            ".": {},
+                            "v:\"backupplan-delete-finalizer\"": {}
+                        }
+                    },
+                    "f:spec": {
+                        "f:backupConfig": {
+                            "f:schedulePolicy": {}
+                        },
+                        "f:snapshotConfig": {
+                            "f:schedulePolicy": {}
+                        }
+                    }
+                }
+            },
+            {
+                "manager": "manager",
+                "operation": "Update",
+                "apiVersion": "triliovault.trilio.io/v1",
+                "time": "2026-01-16T09:42:14Z",
+                "fieldsType": "FieldsV1",
+                "fieldsV1": {
+                    "f:status": {
+                        ".": {},
+                        "f:applicationType": {},
+                        "f:condition": {},
+                        "f:kubevirtStatus": {},
+                        "f:scope": {},
+                        "f:stats": {
+                            ".": {},
+                            "f:backupSummary": {
+                                ".": {},
+                                "f:inProgressBackup": {},
+                                "f:latestBackup": {},
+                                "f:pvcExistsForBackup": {}
+                            },
+                            "f:restoreSummary": {},
+                            "f:snapshotSummary": {
+                                ".": {},
+                                "f:pvcExistsForSnapshot": {}
+                            }
+                        },
+                        "f:status": {}
+                    }
+                },
+                "subresource": "status"
+            }
+        ]
+    },
+    "spec": {
+        "scanConfig": {
+            "enabled": true,
+            "scanOldBackups": true
+        },
+        "backupConfig": {
+            "target": {
+                "kind": "Target",
+                "namespace": "dipayan",
+                "name": "dipayan-minio",
+                "uid": "1bd29cea-7c09-452f-9acb-36203b699b80",
+                "apiVersion": "triliovault.trilio.io/v1",
+                "resourceVersion": "2608662"
+            },
+            "schedulePolicy": {}
+        },
+        "snapshotConfig": {
+            "target": {
+                "kind": "Target",
+                "namespace": "dipayan",
+                "name": "dipayan-minio",
+                "uid": "1bd29cea-7c09-452f-9acb-36203b699b80",
+                "apiVersion": "triliovault.trilio.io/v1",
+                "resourceVersion": "2608662"
+            },
+            "schedulePolicy": {}
+        },
+        "backupPlanComponents": {
+            "customSelector": {
+                "selectResources": {
+                    "gvkSelector": [
+                        {
+                            "groupVersionKind": {
+                                "group": "kubevirt.io",
+                                "version": "v1",
+                                "kind": "VirtualMachine"
+                            },
+                            "objects": [
+                                "test-vm"
+                            ]
+                        }
+                    ]
+                }
+            }
+        },
+        "backupPlanFlags": {
+            "skipImageBackup": true
+        }
+    },
+    "status": {
+        "condition": [
+            {
+                "status": "InProgress",
+                "timestamp": "2026-01-16T09:42:01Z",
+                "reason": "Sync InProgress",
+                "phase": "Sync"
+            },
+            {
+                "status": "Completed",
+                "timestamp": "2026-01-16T09:42:01Z",
+                "reason": "Sync Completed",
+                "phase": "Sync"
+            }
+        ],
+        "status": "Available",
+        "scope": "App",
+        "applicationType": "Custom",
+        "stats": {
+            "backupSummary": {
+                "inProgressBackup": {
+                    "kind": "Backup",
+                    "namespace": "dipayan",
+                    "name": "dipayan-vm-bkp",
+                    "uid": "44423294-7fb7-4624-b5ea-1fa6e705a7ea",
+                    "apiVersion": "triliovault.trilio.io/v1",
+                    "resourceVersion": "2611166"
+                },
+                "latestBackup": {
+                    "kind": "Backup",
+                    "namespace": "dipayan",
+                    "name": "dipayan-vm-bkp",
+                    "uid": "44423294-7fb7-4624-b5ea-1fa6e705a7ea",
+                    "apiVersion": "triliovault.trilio.io/v1",
+                    "resourceVersion": "2611166"
+                },
+                "pvcExistsForBackup": false
+            },
+            "snapshotSummary": {
+                "pvcExistsForSnapshot": false
+            },
+            "restoreSummary": {}
+        },
+        "kubevirtStatus": "Enabled",
+        "isImmutableBackupDisabled": false,
+        "isImmutableSnapshotDisabled": false
+    }
+}

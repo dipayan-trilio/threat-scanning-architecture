@@ -144,9 +144,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 			// TODO: Proceed to create scan job
 			// For now, mark as completed since we're using placeholders
-			if uErr := r.updateScanInstanceStatus(ctx, scanInstance, originalScanInstance, v1.ScanCompleted); uErr != nil {
-				return ctrl.Result{}, uErr
-			}
+			// if uErr := r.updateScanInstanceStatus(ctx, scanInstance, originalScanInstance, v1.ScanCompleted); uErr != nil {
+			// 	return ctrl.Result{}, uErr
+			// }
 		}
 
 	case v1.Failed:

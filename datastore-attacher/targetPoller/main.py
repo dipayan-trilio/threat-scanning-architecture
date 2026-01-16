@@ -155,15 +155,15 @@ def main():
         handler.initialize()
         
         # ===== CLEANUP PHASE =====
-        logging.info("")
+        logging.info("=" * 60)
         handler.perform_cleanup()
         
         # ===== DISCOVERY PHASE =====
-        logging.info("")
+        logging.info("=" * 60)
         handler.perform_discovery()
         
         # ===== SHUTDOWN =====
-        logging.info("")
+        logging.info("=" * 60)
         handler.shutdown()
         
         # ===== SUMMARY =====

@@ -9,9 +9,14 @@ import re
 import subprocess
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
+import sys
+
+# Add parent directory to path for shared imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 
 from .base_handler import BaseTargetHandler, TRILIODATA_MOUNT_PATH, IGNORE_RECENT_UPDATES_MINUTES
 from targetPoller.models.storage_state import StorageState, BackupObject, BackupType
+from shared.backup_detection import TVKBackupDetector
 
 from mount_utility import constants
 
@@ -36,124 +41,31 @@ class TVKTargetHandler(BaseTargetHandler):
         super().__init__(target_cr, k8s_client, logger_instance)
         self.backup_type = 'TVK'
         self.is_mounted = False
+        # Initialize shared detector
+        self.detector = TVKBackupDetector(self.parsed_target, self.target_type, self.logger)
     
     def detect_backup_type(self) -> str:
         """
         Detect if this is a TVK backup target.
         
-        Looks for tvk-meta.json (NFS) or tvk-meta.json.manifest.<hex> (S3).
+        Uses shared TVKBackupDetector for detection logic.
         
         Returns:
             'TVK' if TVK markers found, 'UNKNOWN' otherwise
         """
         self.logger.info("Detecting backup type...")
         print(f"Target type: {self.target_type}")
-        try:
-            if self.target_type == constants.OBJECT_STORE:
-                return self._detect_tvk_s3()
+        
+        # For NFS, mount first if not already mounted
+        mount_path = None
+        if self.target_type != constants.OBJECT_STORE:
+            if not self.is_mounted:
+                mount_path = self._mount_target()
             else:
-                return self._detect_tvk_nfs()
-        except Exception as e:
-            self.logger.error(f"Error during backup type detection: {str(e)}", exc_info=True)
-            return 'UNKNOWN'
-    
-    def _detect_tvk_s3(self) -> str:
-        """Detect TVK on S3 target"""
-        import boto3
-        from botocore.config import Config
+                mount_path = TRILIODATA_MOUNT_PATH
         
-        metadata = self.parsed_target['metaData']
-        bucket_name = metadata['s3Bucket']
-        
-        # Create S3 client
-        s3_config = Config(
-            region_name=metadata.get('regionName', ''),
-            signature_version='s3v4'
-        )
-        
-        verify_ssl = True
-        if metadata.get('skipCertVerification', False):
-            verify_ssl = False
-        
-        s3_client = boto3.client(
-            's3',
-            endpoint_url=metadata.get('s3EndpointUrl'),
-            aws_access_key_id=metadata.get('accessKeyID'),
-            aws_secret_access_key=metadata.get('accessKey'),
-            config=s3_config,
-            verify=verify_ssl
-        )
-        
-        # Look for tvk-meta.json.manifest.<hex> pattern
-        self.logger.info(f"Scanning S3 bucket '{bucket_name}' for TVK markers...")
-        
-        tvk_meta_pattern = re.compile(r'^.+/tvk-meta\.json\.manifest\.[0-9a-f]{8}$')
-        
-        try:
-            paginator = s3_client.get_paginator('list_objects_v2')
-            
-            checked_count = 0
-            for page in paginator.paginate(Bucket=bucket_name, Prefix=''):
-                for obj in page.get('Contents', []):
-                    obj_key = obj['Key']
-                    checked_count += 1
-                    
-                    # Skip data segments directory
-                    if obj_key.startswith('80bc80ff-0c51-4534-86a2-ec5e719643c2/'):
-                        continue
-                    
-                    # Check for TVK marker
-                    if tvk_meta_pattern.match(obj_key):
-                        self.logger.info(f"Found TVK marker: {obj_key}")
-                        return 'TVK'
-                    
-                    # Check first few backups only
-                    if checked_count > 100:
-                        break
-                
-                if checked_count > 100:
-                    break
-            
-            self.logger.warning("No TVK markers found in S3 bucket")
-            return 'UNKNOWN'
-            
-        except Exception as e:
-            self.logger.error(f"Error scanning S3 for TVK markers: {str(e)}")
-            return 'UNKNOWN'
-    
-    def _detect_tvk_nfs(self) -> str:
-        """Detect TVK on NFS target"""
-        # Mount target
-        mount_path = self._mount_target()
-        
-        # Look for tvk-meta.json in any backup directory
-        self.logger.info(f"Scanning NFS mount '{mount_path}' for TVK markers...")
-        
-        try:
-            # Find backup directories
-            result = subprocess.run(
-                ['find', mount_path, '-mindepth', '2', '-maxdepth', '2', '-type', 'd'],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=60
-            )
-            
-            backup_dirs = [d for d in result.stdout.strip().split('\n') if d]
-            
-            # Check first few backup directories for tvk-meta.json
-            for backup_dir in backup_dirs[:5]:
-                tvk_meta_path = os.path.join(backup_dir, 'tvk-meta.json')
-                if os.path.exists(tvk_meta_path):
-                    self.logger.info(f"Found TVK marker: {tvk_meta_path}")
-                    return 'TVK'
-            
-            self.logger.warning("No TVK markers found in NFS mount")
-            return 'UNKNOWN'
-            
-        except Exception as e:
-            self.logger.error(f"Error scanning NFS for TVK markers: {str(e)}")
-            return 'UNKNOWN'
+        # Use shared detector
+        return self.detector.detect(mount_path)
     
     def populate_storage_state(self) -> StorageState:
         """
@@ -405,33 +317,40 @@ class TVKTargetHandler(BaseTargetHandler):
         self.storage_state = self.populate_storage_state()
         self.logger.info("✓ Storage state refreshed")
     
-    def _read_scan_config(self, backupplan_uid: str, backup_uid: str):
-        """Read scanConfig from backupplan.json (TVK format)"""
+    def _read_scan_config(self, backupplan_uid: str, backup: BackupObject):
+        """Read scanConfig from backupplan.json or cluster-backupplan.json (TVK format)"""
+        import json
+        from targetPoller.models.storage_state import ScanConfig, BackupType
+        
+        # Determine which backupplan file to read based on backup type
+        if backup.type in [BackupType.CLUSTER_BACKUP, BackupType.CLUSTER_SNAPSHOT]:
+            backupplan_file = 'cluster-backupplan.json'
+        else:  # BACKUP or SNAPSHOT
+            backupplan_file = 'backupplan.json'
+        
         try:
             backupplan_json_path = os.path.join(
                 TRILIODATA_MOUNT_PATH,
                 backupplan_uid,
-                backup_uid,
-                'backupplan.json'
+                backup.backup_uid,
+                backupplan_file
             )
             
             with open(backupplan_json_path, 'r') as f:
-                import json
                 backupplan_data = json.load(f)
             
             scan_config_dict = backupplan_data.get('spec', {}).get('scanConfig')
             
-            from targetPoller.models.storage_state import ScanConfig
             return ScanConfig.from_dict(scan_config_dict)
             
         except FileNotFoundError:
             self.logger.warning(
-                f"backupplan.json not found for {backupplan_uid}/{backup_uid}"
+                f"{backupplan_file} not found for {backupplan_uid}/{backup.backup_uid}"
             )
             return None
         except Exception as e:
             self.logger.warning(
-                f"Failed to read scanConfig for {backupplan_uid}: {str(e)}"
+                f"Failed to read scanConfig from {backupplan_file} for {backupplan_uid}: {str(e)}"
             )
             return None
     

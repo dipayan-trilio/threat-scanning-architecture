@@ -121,15 +121,16 @@ class BaseTargetHandler(ABC):
         pass
     
     @abstractmethod
-    def _read_scan_config(self, backupplan_uid: str, backup_uid: str) -> Optional[ScanConfig]:
+    def _read_scan_config(self, backupplan_uid: str, backup: BackupObject) -> Optional[ScanConfig]:
         """
-        Read scan configuration for a backupplan.
+        Read scan configuration for a backup.
         
         Implementation is type-specific (TVK vs TVO).
+        Uses the backup type to determine which backupplan file to read.
         
         Args:
-            backupplan_uid: BackupPlan UID
-            backup_uid: Backup UID (to locate config file)
+            backupplan_uid: BackupPlan UID (since it's not stored in BackupObject)
+            backup: BackupObject containing backup details including type
             
         Returns:
             ScanConfig object or None if not found/configured
@@ -401,14 +402,14 @@ class BaseTargetHandler(ABC):
                 return True
             
             # Step b: Read backupplan.json to get scanConfig
-            scan_config = self._read_scan_config(backupplan_uid, backup.backup_uid)
+            scan_config = self._read_scan_config(backupplan_uid, backup)
             
-            # if not scan_config or not scan_config.enabled:
-            #     self.logger.info(
-            #         f"    Scanning not enabled for backupplan {backupplan_uid}, "
-            #         f"discovery complete"
-            #     )
-            #     return False
+            if not scan_config or not scan_config.enabled:
+                self.logger.info(
+                    f"    Scanning not enabled for backupplan {backupplan_uid}, "
+                    f"discovery complete"
+                )
+                return False
             
             # Handle scenarios based on scanOldBackups flag
             if backup == latest_backup and scan_config.scan_old_backups:

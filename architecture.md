@@ -382,7 +382,7 @@ flowchart TB
     name: random-uuid
     labels:
       trilio.io/instance-id: tvk-instance-id | tvo-instance-id
-      trilio.io/backup-target: target-uid
+      trilio.io/backup-target: target-name
       trilio.io/backupplan: backupplan-uid
       trilio.io/backup: backup-uid
     annotations:

@@ -79,7 +79,7 @@ const (
 	ResourceCreatorKindLabelKey = "trilio.io/creator-kind"
 
 	// JobPendingDeadlineSeconds is the default deadline for pending jobs
-	JobPendingDeadlineSeconds = 300
+	JobPendingDeadlineSeconds = 900
 
 	// SecretKeyName is the key name for secret key in credential secret
 	SecretKeyName = "secretKey"

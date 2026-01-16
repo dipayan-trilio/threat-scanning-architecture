@@ -1,7 +1,7 @@
 """
 Extended Kubernetes client for targetPoller.
 
-Extends the base K8s client with additional methods for ScanInstance creation.
+Extends the shared K8s client with additional methods for ScanInstance creation.
 """
 
 import uuid
@@ -9,10 +9,11 @@ import sys
 import os
 from typing import Dict, Optional
 
-# Import the base K8s client from poller
+# Add parent directory to path for shared imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 
-from poller.k8s.client import K8sClient as BaseK8sClient
+# Import shared K8s client
+from shared.k8s.client import K8sClient as SharedK8sClient
 from kubernetes.client.rest import ApiException
 
 from mount_utility import logger
@@ -20,9 +21,11 @@ from mount_utility import logger
 logging = logger.logger
 
 
-class K8sClient(BaseK8sClient):
+class K8sClient(SharedK8sClient):
     """
     Extended K8s client with ScanInstance creation support.
+    
+    Extends the shared K8sClient with targetPoller-specific methods.
     """
     
     def create_scaninstance(

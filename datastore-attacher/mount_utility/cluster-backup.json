@@ -1,0 +1,191 @@
+{
+    "kind": "ClusterBackup",
+    "apiVersion": "triliovault.trilio.io/v1",
+    "metadata": {
+        "name": "nfs-target01",
+        "uid": "0544a81d-8eea-47b2-88b9-d4e0d998ac9f",
+        "resourceVersion": "1754579534754799006",
+        "generation": 1,
+        "creationTimestamp": "2025-08-07T15:06:03Z",
+        "annotations": {
+            "triliovault.trilio.io/instance-id": "f0d14776-906b-426c-9ab8-38e39e840e51",
+            "triliovault.trilio.io/processed": "updater"
+        },
+        "finalizers": [
+            "backup-cleanup-finalizer"
+        ],
+        "managedFields": [
+            {
+                "manager": "manager",
+                "operation": "Update",
+                "apiVersion": "triliovault.trilio.io/v1",
+                "time": "2025-08-07T15:06:03Z",
+                "fieldsType": "FieldsV1",
+                "fieldsV1": {
+                    "f:metadata": {
+                        "f:finalizers": {
+                            ".": {},
+                            "v:\"backup-cleanup-finalizer\"": {}
+                        }
+                    }
+                }
+            },
+            {
+                "manager": "web-backend",
+                "operation": "Update",
+                "apiVersion": "triliovault.trilio.io/v1",
+                "time": "2025-08-07T15:06:03Z",
+                "fieldsType": "FieldsV1",
+                "fieldsV1": {
+                    "f:spec": {
+                        ".": {},
+                        "f:clusterBackupPlan": {},
+                        "f:type": {}
+                    }
+                }
+            },
+            {
+                "manager": "manager",
+                "operation": "Update",
+                "apiVersion": "triliovault.trilio.io/v1",
+                "time": "2025-08-07T15:12:14Z",
+                "fieldsType": "FieldsV1",
+                "fieldsV1": {
+                    "f:status": {
+                        ".": {},
+                        "f:backupInfos": {
+                            ".": {},
+                            "f:ns1": {
+                                ".": {},
+                                "f:backup": {},
+                                "f:location": {},
+                                "f:percentageCompletion": {},
+                                "f:status": {},
+                                "f:type": {}
+                            },
+                            "f:ns2": {
+                                ".": {},
+                                "f:backup": {},
+                                "f:location": {},
+                                "f:percentageCompletion": {},
+                                "f:status": {},
+                                "f:type": {}
+                            }
+                        },
+                        "f:condition": {},
+                        "f:encryptionEnabled": {},
+                        "f:location": {},
+                        "f:percentageCompletion": {},
+                        "f:size": {},
+                        "f:startTimestamp": {},
+                        "f:stats": {
+                            ".": {},
+                            "f:hookExists": {},
+                            "f:targetInfo": {
+                                ".": {},
+                                "f:target": {},
+                                "f:type": {},
+                                "f:vendor": {}
+                            }
+                        },
+                        "f:status": {},
+                        "f:type": {}
+                    }
+                },
+                "subresource": "status"
+            }
+        ]
+    },
+    "spec": {
+        "type": "Full",
+        "clusterBackupPlan": {
+            "kind": "ClusterBackupPlan",
+            "name": "dsfds",
+            "uid": "19ddd789-078b-43ff-ae15-b6d962526681",
+            "apiVersion": "triliovault.trilio.io/v1",
+            "resourceVersion": "1754579132587295002"
+        }
+    },
+    "status": {
+        "type": "Full",
+        "location": "19ddd789-078b-43ff-ae15-b6d962526681/0544a81d-8eea-47b2-88b9-d4e0d998ac9f",
+        "startTimestamp": "2025-08-07T15:06:03Z",
+        "completionTimestamp": "2025-08-07T15:12:18Z",
+        "status": "Available",
+        "metadataSize": "0",
+        "size": "13369344",
+        "percentageCompletion": 100,
+        "condition": [
+            {
+                "phase": "Backup",
+                "status": "InProgress",
+                "timestamp": "2025-08-07T15:06:03Z",
+                "reason": "Backup InProgress"
+            },
+            {
+                "phase": "Backup",
+                "status": "Completed",
+                "timestamp": "2025-08-07T15:12:13Z",
+                "reason": "Backup Completed"
+            },
+            {
+                "phase": "MetadataUpload",
+                "status": "InProgress",
+                "timestamp": "2025-08-07T15:12:14Z",
+                "reason": "MetadataUpload InProgress"
+            },
+            {
+                "phase": "MetadataUpload",
+                "status": "Completed",
+                "timestamp": "2025-08-07T15:12:18Z",
+                "reason": "MetadataUpload Completed"
+            }
+        ],
+        "backupInfos": {
+            "ns1": {
+                "backup": {
+                    "kind": "Backup",
+                    "namespace": "ns1",
+                    "name": "multi-ns-nfs-target01-6b573304-645e-48ca-9594-ccc6ba96ac8a",
+                    "uid": "ff050702-17ae-48a5-9b4c-2c4d98f0e16d",
+                    "apiVersion": "triliovault.trilio.io/v1",
+                    "resourceVersion": "1754579533333135016"
+                },
+                "status": "Available",
+                "percentageCompletion": 100,
+                "location": "a5d723f5-4e0c-4970-90a6-4f3283fd8b0c/ff050702-17ae-48a5-9b4c-2c4d98f0e16d",
+                "type": "Full"
+            },
+            "ns2": {
+                "backup": {
+                    "kind": "Backup",
+                    "namespace": "ns2",
+                    "name": "multi-ns-nfs-target01-782d6514-8b70-4650-87b7-a192c8eeb664",
+                    "uid": "fd711170-57e9-41c0-bc9c-f41a0f342e0e",
+                    "apiVersion": "triliovault.trilio.io/v1",
+                    "resourceVersion": "1754579534467007018"
+                },
+                "status": "Available",
+                "percentageCompletion": 100,
+                "location": "c4a4b454-1ad1-4822-a59c-a00adcca7372/fd711170-57e9-41c0-bc9c-f41a0f342e0e",
+                "type": "Full"
+            }
+        },
+        "stats": {
+            "targetInfo": {
+                "target": {
+                    "kind": "Target",
+                    "namespace": "ns1",
+                    "name": "target2",
+                    "uid": "8a17631d-4aad-47b2-83c1-dabf76fe7a5c",
+                    "apiVersion": "triliovault.trilio.io/v1",
+                    "resourceVersion": "1754569903034879014"
+                },
+                "type": "ObjectStore",
+                "vendor": "MinIO"
+            },
+            "hookExists": false
+        },
+        "encryptionEnabled": false
+    }
+}
