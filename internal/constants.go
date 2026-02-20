@@ -36,8 +36,17 @@ const (
 	// ScanInstanceScanJobPrefix is the prefix for scan job resources
 	ScanInstanceScanJobPrefix = "threat-scan-scanjob"
 
+	// ScanInstanceScanConfigPrefix is the prefix for scan config configmap
+	ScanInstanceScanConfigPrefix = "scan-config"
+
 	// ScanInstanceNameLabel is the label key for scan instance name
 	ScanInstanceNameLabel = "trilio.io/scaninstance-name"
+
+	// PrescanErrorAnnotation is the annotation key for prescan job error messages
+	PrescanErrorAnnotation = "threatscanning.trilio.io/prescan-error"
+
+	// ScanErrorAnnotation is the annotation key for scan job error messages
+	ScanErrorAnnotation = "threatscanning.trilio.io/scan-error"
 
 	// Operation annotation key
 	Operation = "trilio.io/operation"
@@ -105,11 +114,17 @@ const (
 	// RelatedImagePoller is the environment variable name for poller image
 	RelatedImagePoller = "RELATED_IMAGE_POLLER"
 
+	// RelatedImageScanner is the environment variable name for scanner image
+	RelatedImageScanner = "RELATED_IMAGE_SCANNER"
+
 	// DefaultValidatorImage is the default validator image if env var not set
 	DefaultValidatorImage = "gcr.io/amazing-chalice-243510/threatscanning/datastore-attacher:latest"
 
 	// DefaultPollerImage is the default poller image if env var not set
 	DefaultPollerImage = "threat-scan-poller:latest"
+
+	// DefaultScannerImage is the default scanner image if env var not set
+	DefaultScannerImage = "threat-scan-scanner:latest"
 
 	// DefaultPollerSchedule is the default cron schedule for poller (every 6 hours)
 	DefaultPollerSchedule = "0 */6 * * *"

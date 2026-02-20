@@ -184,6 +184,12 @@ class TVKTargetHandler(BaseTargetHandler):
                         self.logger.warning(f"Unknown backup type: {metadata_type_str}")
                         continue
                     
+                    # Skip child namespace backups that belong to a cluster-backup
+                    # For S3, we can't easily read the file content here, so we'll rely on
+                    # the prescan job to handle cluster-backup children properly.
+                    # The controller will only create ScanInstances for top-level backups/cluster-backups
+                    # Note: Child backups will be skipped during prescan if they have ClusterBackup owner
+                    
                     # For S3, store path without manifest suffix for easier file reading
                     # When mounted via s3fuse, the file will have the manifest suffix
                     # but we'll search for it dynamically when reading
@@ -285,6 +291,11 @@ class TVKTargetHandler(BaseTargetHandler):
                 except ValueError:
                     continue
                 
+                # Note: Child backupplans (owned by ClusterBackupPlan) are filtered
+                # in _read_scan_config() method which reads backupplan.json
+                # and checks ownerReferences. This is more efficient than checking
+                # every backup individually.
+                
                 # Create relative json_path (relative to mount point)
                 json_path = f"{backupplan_uid}/{backup_uid}/{filename}"
                 
@@ -318,7 +329,13 @@ class TVKTargetHandler(BaseTargetHandler):
         self.logger.info("✓ Storage state refreshed")
     
     def _read_scan_config(self, backupplan_uid: str, backup: BackupObject):
-        """Read scanConfig from backupplan.json or cluster-backupplan.json (TVK format)"""
+        """
+        Read scanConfig from backupplan.json or cluster-backupplan.json (TVK format).
+        
+        First checks if the backupplan is a child of ClusterBackupPlan by reading
+        ownerReferences. If yes, returns None to skip this entire backupplan since
+        all backups under it are children of a cluster-backup.
+        """
         import json
         from targetPoller.models.storage_state import ScanConfig, BackupType
         
@@ -339,6 +356,26 @@ class TVKTargetHandler(BaseTargetHandler):
             with open(backupplan_json_path, 'r') as f:
                 backupplan_data = json.load(f)
             
+            # Check if this backupplan is a child of ClusterBackupPlan
+            owner_refs = backupplan_data.get('metadata', {}).get('ownerReferences', [])
+            is_child_of_cluster = any(
+                owner.get('kind') == 'ClusterBackupPlan' 
+                for owner in owner_refs
+            )
+            
+            if is_child_of_cluster:
+                cluster_plan_name = next(
+                    (owner.get('name') for owner in owner_refs 
+                     if owner.get('kind') == 'ClusterBackupPlan'),
+                    'unknown'
+                )
+                self.logger.info(
+                    f"  BackupPlan {backupplan_uid} is child of ClusterBackupPlan '{cluster_plan_name}', "
+                    f"skipping entire backupplan (all backups will be handled via cluster-backup parent)"
+                )
+                return None
+            
+            # Not a child backupplan - proceed with reading scanConfig
             scan_config_dict = backupplan_data.get('spec', {}).get('scanConfig')
             
             return ScanConfig.from_dict(scan_config_dict)

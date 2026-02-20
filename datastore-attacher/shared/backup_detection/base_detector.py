@@ -74,6 +74,7 @@ class BaseBackupDetector(ABC):
             - instance_id: TVK/TVO instance ID
             - backupplan_uid: BackupPlan UID
             - backup_uid: Backup UID (validated)
+            - is_vm_workload: True if VM workload, False otherwise
         """
         pass
     

@@ -1,0 +1,73 @@
+# Simple Manual Test Job for Target Poller
+#
+# Quick test job with minimal configuration.
+# Just update TARGET_NAME and apply!
+#
+# Usage:
+#   1. Edit TARGET_NAME below (line 25)
+#   2. kubectl apply -f test-poller-job-simple.yaml
+#   3. kubectl logs -n threat-scanning-system test-poller-simple -f
+#   4. kubectl delete job -n threat-scanning-system test-poller-simple
+#
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-poller-simple
+  namespace: threat-scanning-system
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      serviceAccountName: trilio-threat-scanning
+      restartPolicy: Never
+      containers:
+      - name: poller
+        # CHANGE THIS: Update to your datastore-attacher image
+        image: your-registry/datastore-attacher:latest
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            # CHANGE THIS: Update target name
+            TARGET_NAME="minio-target"
+            
+            echo "=========================================="
+            echo "Testing Target Poller"
+            echo "Target: ${TARGET_NAME}"
+            echo "=========================================="
+            
+            # Mount datastore
+            echo "Mounting datastore..."
+            python3 /opt/threat-scanning/datastore-attacher/mount_utility/mount_by_target_crd/mount_datastores.py \
+              --target-name=${TARGET_NAME} \
+              --group=threatscanning.trilio.io \
+              --version=v1 || exit 1
+            
+            echo "✓ Mounted to /triliodata"
+            echo ""
+            
+            # Run poller
+            echo "Running poller..."
+            target-poller \
+              --target-name=${TARGET_NAME} \
+              --group=threatscanning.trilio.io \
+              --version=v1
+            
+            echo ""
+            echo "✓ Poller completed successfully!"
+        
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["SYS_ADMIN"]
+        
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+
+

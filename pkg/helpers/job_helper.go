@@ -2,6 +2,7 @@ package helpers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -34,28 +35,27 @@ func GetTargetValidatorJob(ctx context.Context, cl client.Client, target *v1.Tar
 		targetType = "reporting"
 	}
 
-	// Build validation command with Python script
-	// For NFS targets and reporting targets: directly run validation (no mount needed)
-	// For backup ObjectStore targets: mount first (via s3fuse) then validate
-	if target.IsNFSTarget() || target.IsReportingTarget() {
-		// NFS: validates via direct NFS access
-		// Reporting: validates via boto3 API (no mount needed)
-		validationCmd = fmt.Sprintf("%s %s --target-name=%s --type=%s --group=threatscanning.trilio.io --version=v1",
-			internal.Py3Path,
-			fmt.Sprintf("%s/%s", internal.BasePath, internal.DatastoreValidatorUtil),
-			target.Name,
-			targetType)
+	// Build validation command: mount datastore first, then validate
+	// For NFS targets and reporting targets: mount via NFS volume or use boto3 API
+	// For backup ObjectStore targets: mount via s3fuse, then validate
+	mountCmd := fmt.Sprintf("%s %s --target-name=%s --group=threatscanning.trilio.io --version=v1",
+		internal.Py3Path,
+		fmt.Sprintf("%s/%s", internal.BasePath, internal.DatastoreMountUtil),
+		target.Name)
+
+	validateCmd := fmt.Sprintf("target-validator --target-name=%s --type=%s --group=threatscanning.trilio.io --version=v1",
+		target.Name,
+		targetType)
+
+	// For NFS targets and reporting targets, mounting is handled differently
+	if target.IsNFSTarget() {
+		// NFS: Direct mount via volume, no need for mount command
+		validationCmd = validateCmd
+	} else if target.IsReportingTarget() {
+		// Reporting: Uses boto3 API, no mounting needed
+		validationCmd = validateCmd
 	} else {
-		// For backup ObjectStore targets: mount via s3fuse, then validate via filesystem access
-		mountCmd := fmt.Sprintf("%s %s --target-name=%s --group=threatscanning.trilio.io --version=v1",
-			internal.Py3Path,
-			fmt.Sprintf("%s/%s", internal.BasePath, internal.DatastoreMountUtil),
-			target.Name)
-		validateCmd := fmt.Sprintf("%s %s --target-name=%s --type=%s --group=threatscanning.trilio.io --version=v1",
-			internal.Py3Path,
-			fmt.Sprintf("%s/%s", internal.BasePath, internal.DatastoreValidatorUtil),
-			target.Name,
-			targetType)
+		// ObjectStore backup targets: mount first, then validate
 		validationCmd = fmt.Sprintf("%s && %s", mountCmd, validateCmd)
 	}
 
@@ -83,9 +83,9 @@ func GetTargetValidatorJob(ctx context.Context, cl client.Client, target *v1.Tar
 	validationContainer := corev1.Container{
 		Name:            "validator",
 		Image:           getValidatorImage(),
-		Command:         []string{"/bin/sh", "-c"},
+		Command:         []string{"/bin/bash", "-c"},
 		Args:            []string{validationCmd},
-		ImagePullPolicy: corev1.PullIfNotPresent,
+		ImagePullPolicy: corev1.PullAlways,
 		VolumeMounts:    volumeMounts,
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
@@ -119,7 +119,10 @@ func GetTargetValidatorJob(ctx context.Context, cl client.Client, target *v1.Tar
 	// Create the job
 	jobName := GetTargetResourceName(internal.TargetValidationPrefix, credentialHash)
 	backoffLimit := internal.JobBackoffLimit
-	ttlSecondsAfterFinished := internal.JobTTLSecondsAfterFinished
+	// Do NOT set TTLSecondsAfterFinished for target validation jobs
+	// Following TVK pattern: jobs are kept until manually cleaned up by the controller
+	// Successful validations: cleaned when target becomes Available
+	// Failed validations: kept for debugging, awaiting manual cleanup
 
 	// Get centralized labels and annotations
 	labels := GetTargetResourceLabels(credentialHash, "target-validator")
@@ -133,8 +136,11 @@ func GetTargetValidatorJob(ctx context.Context, cl client.Client, target *v1.Tar
 			Annotations: annotations,
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit:            &backoffLimit,
-			TTLSecondsAfterFinished: &ttlSecondsAfterFinished,
+			BackoffLimit: &backoffLimit,
+			// TTLSecondsAfterFinished is intentionally not set
+			// Jobs are manually cleaned up:
+			// - On success: when target becomes Available (see reconcileValidationJob)
+			// - On failure: kept for debugging, manual cleanup required
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
@@ -421,13 +427,27 @@ func GetTargetPollerCronJob(ctx context.Context, cl client.Client, target *v1.Ta
 		volumeMounts []corev1.VolumeMount
 	)
 
-	// Build poller command based on target type
+	// Build poller command: mount datastore first, then poll
+	mountCmd := fmt.Sprintf("%s %s --target-name=%s --group=threatscanning.trilio.io --version=v1",
+		internal.Py3Path,
+		fmt.Sprintf("%s/%s", internal.BasePath, internal.DatastoreMountUtil),
+		target.Name)
+
+	pollCmd := fmt.Sprintf("target-poller --target-name=%s --group=threatscanning.trilio.io --version=v1",
+		target.Name)
+
+	// For NFS targets, mounting is handled via volume, no need for mount command
 	if target.IsNFSTarget() {
-		pollerCmd = fmt.Sprintf("echo 'Polling NFS target: %s' && ls -la /mnt/target && echo 'Polling completed'", target.Name)
+		pollerCmd = pollCmd
+	} else {
+		// ObjectStore targets: mount first, then poll
+		pollerCmd = fmt.Sprintf("%s && %s", mountCmd, pollCmd)
+	}
+
+	// Add volumes based on target type
+	if target.IsNFSTarget() {
 		volumes, volumeMounts = getNFSVolumes(target, credentialHash)
 	} else {
-		pollerCmd = fmt.Sprintf("echo 'Polling ObjectStore target: %s' && echo 'Polling completed'", target.Name)
-
 		if target.HasObjectStoreCredentialSecret() {
 			secretVolume, secretMount := getSecretVolume(target)
 			volumes = append(volumes, secretVolume)
@@ -445,9 +465,9 @@ func GetTargetPollerCronJob(ctx context.Context, cl client.Client, target *v1.Ta
 	pollerContainer := corev1.Container{
 		Name:            "poller",
 		Image:           getPollerImage(),
-		Command:         []string{"/bin/sh", "-c"},
+		Command:         []string{"/bin/bash", "-c"},
 		Args:            []string{pollerCmd},
-		ImagePullPolicy: corev1.PullIfNotPresent,
+		ImagePullPolicy: corev1.PullAlways,
 		VolumeMounts:    volumeMounts,
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
@@ -464,6 +484,17 @@ func GetTargetPollerCronJob(ctx context.Context, cl client.Client, target *v1.Ta
 	// Add environment variables for object store targets
 	if target.IsObjectStoreTarget() {
 		pollerContainer.Env = getObjectStoreEnvVars(target)
+	}
+
+	// For ObjectStore targets, we need privileged container for s3fuse mounting
+	if target.IsObjectStoreTarget() {
+		privileged := true
+		pollerContainer.SecurityContext = &corev1.SecurityContext{
+			Privileged: &privileged,
+			Capabilities: &corev1.Capabilities{
+				Add: []corev1.Capability{"SYS_ADMIN"},
+			},
+		}
 	}
 
 	// Generate cronjob name using credentialHash (shared across targets with same credentials)
@@ -525,20 +556,9 @@ func getPollerImage() string {
 // GetPreScanJob creates a job spec to perform pre-scan validation for a scan instance
 func GetPreScanJob(ctx context.Context, cl client.Client, scanInstance interface{}, targetName, backupUID, backupPath string) (*batchv1.Job, error) {
 	// Type assertion to get the scan instance name
-	// For now, we'll use a simple placeholder implementation
-	// TODO: Replace with actual pre-scan logic that:
-	// 1. Validates the backup target accessibility (webhook validates existence and availability)
-	// 2. Validates the backup path exists
-	// 3. Determines the backup type - TVK/TVO
-	// 4. Reads metadata and updates labels/annotations
-
-	var (
-		preScanCmd   string
-		scanInstName string
-	)
+	var scanInstName string
 
 	// Extract scan instance name using reflection or type assertion
-	// For now, we'll use a simple approach
 	type NameGetter interface {
 		GetName() string
 	}
@@ -553,49 +573,63 @@ func GetPreScanJob(ctx context.Context, cl client.Client, scanInstance interface
 		internal.ScanInstanceNameLabel: scanInstName,
 	}
 
-	// Build pre-scan command - placeholder that prints the captured values
-	// TODO: Replace with actual pre-scan script that:
-	// - Fetches target CR using targetName
-	// - Validates target accessibility
-	// - Mounts target and validates backup path exists
-	// - Determines backup type and reads metadata
-	// - Updates ScanInstance labels/annotations via Kubernetes API
-	preScanCmd = fmt.Sprintf(`
-echo "=========================================="
-echo "PreScan Job - ScanInstance: %s"
-echo "=========================================="
-echo "Target Name: %s"
-echo "Backup UID: %s"
-echo "Backup Path: %s"
-echo "=========================================="
-echo ""
-echo "Starting pre-scan validation..."
-echo "- Fetching target CR: %s"
-echo "- Validating target accessibility..."
-echo "- Validating backup path exists: %s"
-echo "- Determining backup type (TVK/TVO)..."
-echo "- Reading metadata files..."
-echo "- Checking for VM workloads..."
-echo ""
-echo "Pre-scan validation completed successfully!"
-echo "=========================================="
-sleep 5
-`,
-		scanInstName,
+	// Build pre-scan command: mount datastore first, then run prescan
+	// The prescan script will:
+	// 1. Validate backup path exists (on mounted target)
+	// 2. Determine backup type (TVK/TVO)
+	// 3. Read metadata and detect VM workloads
+	// 4. Update ScanInstance CR with labels, annotations, and status.type
+	mountCmd := fmt.Sprintf("%s %s --target-name=%s --group=threatscanning.trilio.io --version=v1",
+		internal.Py3Path,
+		fmt.Sprintf("%s/%s", internal.BasePath, internal.DatastoreMountUtil),
+		targetName)
+
+	prescanCmd := fmt.Sprintf("prescan --target-name=%s --backup-path=%s --backup-uid=%s --scaninstance-name=%s",
 		targetName,
-		backupUID,
 		backupPath,
-		targetName,
-		backupPath)
+		backupUID,
+		scanInstName)
+
+	// Mount first, then run prescan
+	preScanCmd := fmt.Sprintf("%s && %s", mountCmd, prescanCmd)
 
 	// Create the pre-scan container
-	// PreScan job will fetch target CR and mount it based on target type
+	// PreScan job needs:
+	// - Privileged access for mounting (s3fuse for ObjectStore, direct NFS mount)
+	// - Access to Kubernetes API to fetch target CR and update ScanInstance
+	// - ServiceAccount: threat-scanning-controller (has required RBAC)
+	privileged := true
 	preScanContainer := corev1.Container{
 		Name:            "prescan",
-		Image:           getValidatorImage(), // Reuse validator image for now
-		Command:         []string{"/bin/sh", "-c"},
+		Image:           getValidatorImage(), // datastore-attacher image with prescan CLI
+		Command:         []string{"/bin/bash", "-c"},
 		Args:            []string{preScanCmd},
-		ImagePullPolicy: corev1.PullIfNotPresent,
+		ImagePullPolicy: corev1.PullAlways,
+		SecurityContext: &corev1.SecurityContext{
+			Privileged: &privileged,
+			Capabilities: &corev1.Capabilities{
+				Add: []corev1.Capability{"SYS_ADMIN"},
+			},
+		},
+		Env: []corev1.EnvVar{
+			// JOB_NAME and JOB_NAMESPACE for error annotation updates
+			{
+				Name: "JOB_NAME",
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.labels['job-name']",
+					},
+				},
+			},
+			{
+				Name: "JOB_NAMESPACE",
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.namespace",
+					},
+				},
+			},
+		},
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
 				corev1.ResourceCPU:    resource.MustParse("100m"),
@@ -606,16 +640,14 @@ sleep 5
 				corev1.ResourceMemory: resource.MustParse("512Mi"),
 			},
 		},
-		// PreScan job needs access to Kubernetes API to:
-		// 1. Fetch target CR
-		// 2. Update ScanInstance labels/annotations
-		// ServiceAccount: threat-scanning-controller (has required RBAC)
 	}
 
 	// Create the job
 	jobName := GetScanInstanceResourceName(internal.ScanInstancePreScanPrefix, scanInstName)
 	backoffLimit := internal.JobBackoffLimit
-	ttlSecondsAfterFinished := internal.JobTTLSecondsAfterFinished
+	// Do NOT set TTLSecondsAfterFinished for ScanInstance jobs
+	// Following TVK pattern: jobs are kept until manually cleaned up by the controller
+	// This allows inspection of logs for debugging and matches k8s-triliovault behavior
 
 	// Get centralized labels and annotations
 	labels := GetScanInstanceResourceLabels(scanInstName, "prescan")
@@ -629,8 +661,9 @@ sleep 5
 			Annotations: annotations,
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit:            &backoffLimit,
-			TTLSecondsAfterFinished: &ttlSecondsAfterFinished,
+			BackoffLimit: &backoffLimit,
+			// TTLSecondsAfterFinished is intentionally not set
+			// Jobs are manually cleaned up by cleanupScanInstanceJobs when ScanInstance completes
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
@@ -670,4 +703,181 @@ func GetScanInstanceResourceAnnotations(scanInstanceName string) map[string]stri
 	annotations := make(map[string]string)
 	annotations[internal.ScanInstanceNameLabel] = scanInstanceName
 	return annotations
+}
+
+// GetScanConfigMapData generates the configmap data for scan job from scanLocations
+// The format matches the user's requirement: vm_artifacts with VM name as key, disk_image array, collection_time, priority, suspected_compromise
+func GetScanConfigMapData(scanLocations []v1.ScanLocation) (map[string]string, error) {
+	// Build the vm_artifacts structure
+	vmArtifacts := make(map[string]interface{})
+
+	for _, location := range scanLocations {
+		for _, vm := range location.VMs {
+			// Each VM has a name and list of PVC paths (disk images)
+			vmArtifacts[vm.VMName] = map[string]interface{}{
+				"disk_image":           vm.PVCPaths,
+				"collection_time":      time.Now().UTC().Format(time.RFC3339),
+				"priority":             "high",
+				"suspected_compromise": true,
+			}
+		}
+	}
+
+	// Marshal to JSON
+	data := map[string]interface{}{
+		"vm_artifacts": vmArtifacts,
+	}
+
+	jsonData, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal scan config data: %w", err)
+	}
+
+	// Return as configmap data (single file named "config.json")
+	return map[string]string{
+		"config.json": string(jsonData),
+	}, nil
+}
+
+// GetScanConfigMap creates a configmap for scan job configuration
+func GetScanConfigMap(scanInstance *v1.ScanInstance) (*corev1.ConfigMap, error) {
+	configMapName := GetScanInstanceResourceName(internal.ScanInstanceScanConfigPrefix, scanInstance.Name)
+
+	// Generate configmap data from scanLocations
+	data, err := GetScanConfigMapData(scanInstance.Status.ScanLocations)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get centralized labels and annotations
+	labels := GetScanInstanceResourceLabels(scanInstance.Name, "scan-config")
+	annotations := GetScanInstanceResourceAnnotations(scanInstance.Name)
+
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        configMapName,
+			Namespace:   internal.GetInstallNamespace(),
+			Labels:      labels,
+			Annotations: annotations,
+		},
+		Data: data,
+	}
+
+	return configMap, nil
+}
+
+// GetScanJob creates a job spec for scanning VM disk images
+func GetScanJob(ctx context.Context, cl client.Client, scanInstance *v1.ScanInstance) (*batchv1.Job, error) {
+	scanInstName := scanInstance.Name
+	configMapName := GetScanInstanceResourceName(internal.ScanInstanceScanConfigPrefix, scanInstName)
+
+	annotations := map[string]string{
+		internal.Operation:             "scan",
+		internal.ScanInstanceNameLabel: scanInstName,
+	}
+
+	// Build scan command: print config and sleep for 5 minutes (placeholder for actual scanning)
+	// The configmap will be mounted at /config/config.json
+	scanCmd := "cat /config/config.json && echo 'Scan job started' && sleep 60"
+
+	// Create the scan container
+	// For now, this is a placeholder that just prints the config and sleeps
+	// TODO: Replace with actual scanning logic
+	scanContainer := corev1.Container{
+		Name:            "scanner",
+		Image:           getScannerImage(), // Scanner image from env var RELATED_IMAGE_SCANNER
+		Command:         []string{"/bin/bash", "-c"},
+		Args:            []string{scanCmd},
+		ImagePullPolicy: corev1.PullAlways,
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      "scan-config",
+				MountPath: "/config",
+				ReadOnly:  true,
+			},
+		},
+		Env: []corev1.EnvVar{
+			// JOB_NAME and JOB_NAMESPACE for error annotation updates (future use)
+			{
+				Name: "JOB_NAME",
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.labels['job-name']",
+					},
+				},
+			},
+			{
+				Name: "JOB_NAMESPACE",
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.namespace",
+					},
+				},
+			},
+		},
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("500m"),
+				corev1.ResourceMemory: resource.MustParse("512Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("2000m"),
+				corev1.ResourceMemory: resource.MustParse("2Gi"),
+			},
+		},
+	}
+
+	// Create the job
+	jobName := GetScanInstanceResourceName(internal.ScanInstanceScanJobPrefix, scanInstName)
+	backoffLimit := internal.JobBackoffLimit
+
+	// Get centralized labels and annotations
+	labels := GetScanInstanceResourceLabels(scanInstName, "scan")
+	annotations = internal.MergeMaps(annotations, GetScanInstanceResourceAnnotations(scanInstName))
+
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        jobName,
+			Namespace:   internal.GetInstallNamespace(),
+			Labels:      labels,
+			Annotations: annotations,
+		},
+		Spec: batchv1.JobSpec{
+			BackoffLimit: &backoffLimit,
+			// TTLSecondsAfterFinished is intentionally not set
+			// Jobs are manually cleaned up by cleanupScanInstanceJobs when ScanInstance completes
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labels,
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: internal.ControllerServiceAccount,
+					Containers:         []corev1.Container{scanContainer},
+					Volumes: []corev1.Volume{
+						{
+							Name: "scan-config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: configMapName,
+									},
+								},
+							},
+						},
+					},
+					RestartPolicy: corev1.RestartPolicyNever,
+				},
+			},
+		},
+	}
+
+	return job, nil
+}
+
+// getScannerImage returns the scanner image from environment variable or default
+func getScannerImage() string {
+	if img := os.Getenv(internal.RelatedImageScanner); img != "" {
+		return img
+	}
+	return internal.DefaultScannerImage
 }

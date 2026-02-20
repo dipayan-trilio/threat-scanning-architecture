@@ -1,46 +1,52 @@
-FROM python:3.9-alpine
+FROM python:3.9-slim
 
 LABEL name=threat-scanning-datastore-attacher
 LABEL vendor=Trilio\ Data\ Inc.
 LABEL version=VERSION
 LABEL release=RELEASE
 LABEL summary=Threat\ Scanning\ Datastore\ Attacher
-LABEL description=Threat\ Scanning\ Datastore\ Attacher
+LABEL description=Threat\ Scanning\ Datastore\ Attacher\ with\ PreScan,\ Target\ Validation\ and\ Polling
 LABEL maintainer=Trilio\ Data\ Inc.
 
 ARG TARGETOS
 ARG TARGETARCH
 
 # Install system dependencies
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     curl \
     fuse \
-    fuse-dev \
+    libfuse-dev \
     gcc \
     g++ \
     make \
-    musl-dev \
     libffi-dev \
-    openssl-dev \
+    libssl-dev \
     python3-dev \
-    cargo \
-    rust \
-    nfs-utils \
+    nfs-common \
     jq \
-    tzdata
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Python packages
+# Install s3fuse with private index using secret
 RUN --mount=type=secret,id=S3_FUSE_PIP_INDEX_URL,env=S3_FUSE_PIP_INDEX_URL \
     pip3 install --upgrade pip && \
-    pip3 install --no-cache-dir 's3fuse==5.2.0' --extra-index-url ${S3_FUSE_PIP_INDEX_URL} && \
-    pip3 install --no-cache-dir 'kubernetes==33.1.0' && \
-    pip3 install --no-cache-dir jsonformatter==0.3.1 && \
-    pip3 install --no-cache-dir azure-storage-blob==12.25.1 && \
-    pip3 install --no-cache-dir boto3==1.35.80
+    pip3 install --no-cache-dir 's3fuse==5.2.0' --extra-index-url ${S3_FUSE_PIP_INDEX_URL}
+
+# Install Python dependencies
+COPY requirements.txt /tmp/requirements.txt
+RUN pip3 install --no-cache-dir -r /tmp/requirements.txt && \
+    rm /tmp/requirements.txt
+
+# Install additional dependencies for targetPoller and validation
+RUN pip3 install --no-cache-dir \
+    jsonformatter>=0.3.1 \
+    azure-storage-blob>=12.25.1
 
 # Create mount directories
-RUN mkdir -p /triliodata && mkdir -p /triliodata-temp
+RUN mkdir -p /triliodata && \
+    mkdir -p /triliodata-temp && \
+    mkdir -p /opt/threat-scanning/datastore-attacher
 
 # Create Python symlink
 RUN ln -sf /usr/local/bin/python3 /usr/bin/python3 && \
@@ -56,8 +62,7 @@ RUN ARCH=$(uname -m) && \
     curl -Lo /usr/bin/yq https://github.com/mikefarah/yq/releases/download/2.2.1/yq_linux_${ARCH} && \
     chmod +x /usr/bin/yq
 
-RUN mkdir -p /opt/threat-scanning/datastore-attacher
-
+# Copy datastore-attacher code
 COPY . /opt/threat-scanning/datastore-attacher/
 
 WORKDIR /opt/threat-scanning
@@ -65,5 +70,21 @@ WORKDIR /opt/threat-scanning
 # Set PYTHONPATH so Python can find the datastore-attacher modules
 ENV PYTHONPATH=/opt/threat-scanning/datastore-attacher
 
-CMD ["/bin/bash"]
+# Set base path for scripts
+ENV BASE_PATH=/opt/threat-scanning/datastore-attacher
 
+# Create convenience scripts for different operations
+RUN echo '#!/bin/bash\n\
+python3 /opt/threat-scanning/datastore-attacher/scripts/target_validations.py "$@"' \
+> /usr/local/bin/target-validator && chmod +x /usr/local/bin/target-validator
+
+RUN echo '#!/bin/bash\n\
+python3 -m prescan.cli "$@"' \
+> /usr/local/bin/prescan && chmod +x /usr/local/bin/prescan
+
+RUN echo '#!/bin/bash\n\
+python3 /opt/threat-scanning/datastore-attacher/targetPoller/main.py "$@"' \
+> /usr/local/bin/target-poller && chmod +x /usr/local/bin/target-poller
+
+# Default command
+CMD ["/bin/bash"]

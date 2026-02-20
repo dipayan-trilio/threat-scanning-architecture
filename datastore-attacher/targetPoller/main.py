@@ -9,14 +9,15 @@ Phases:
 2. Cleanup: Remove stale ScanInstances
 3. Discovery: Find new backups and create ScanInstances
 
-Environment Variables:
-    TARGET_NAME: Name of the BackupTarget CR (required)
-    TARGET_NAMESPACE: Namespace (default: trilio-system)
-    LOG_LEVEL: Logging level (DEBUG, INFO, WARN, ERROR)
+Arguments:
+    --target-name: Name of the BackupTarget CR (required)
+    --group: API group (default: threatscanning.trilio.io)
+    --version: API version (default: v1)
 """
 
 import os
 import sys
+import argparse
 import logging as python_logging
 
 # Add parent directory to path to import mount_utility
@@ -111,20 +112,16 @@ def get_backup_target(k8s_client: K8sClient, target_name: str):
 
 def main():
     """Main entry point"""
-    logging.info("=" * 70)
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Target Poller for threat scanning')
+    parser.add_argument('--target-name', required=True, help='Name of the BackupTarget CR')
+    parser.add_argument('--group', default='threatscanning.trilio.io', help='API group')
+    parser.add_argument('--version', default='v1', help='API version')
+    
+    args = parser.parse_args()
+    
     logging.info("TARGET POLLER - Starting")
-    logging.info("=" * 70)
-    
-    # Get environment variables
-    target_name = os.environ.get('TARGET_NAME')
-    target_namespace = os.environ.get('TARGET_NAMESPACE', 'trilio-system')
-    
-    if not target_name:
-        logging.error("TARGET_NAME environment variable is required")
-        sys.exit(1)
-    
-    logging.info(f"Target: {target_name}")
-    logging.info(f"Namespace: {target_namespace}")
+    logging.info(f"Target: {args.target_name}")
     
     try:
         # Initialize Kubernetes client
@@ -138,7 +135,7 @@ def main():
             sys.exit(1)
         
         # Get BackupTarget
-        backup_target = get_backup_target(k8s_client, target_name)
+        backup_target = get_backup_target(k8s_client, args.target_name)
         
         # Create handler using factory
         logging.info("")
@@ -150,41 +147,15 @@ def main():
         )
         logging.info("✓ Handler created")
         
-        # ===== INITIALIZATION PHASE =====
-        logging.info("")
         handler.initialize()
         
-        # ===== CLEANUP PHASE =====
-        logging.info("=" * 60)
         handler.perform_cleanup()
         
-        # ===== DISCOVERY PHASE =====
-        logging.info("=" * 60)
         handler.perform_discovery()
         
-        # ===== SHUTDOWN =====
-        logging.info("=" * 60)
         handler.shutdown()
         
-        # ===== SUMMARY =====
-        logging.info("")
-        logging.info("=" * 70)
-        logging.info("TARGET POLLER - Summary")
-        logging.info("=" * 70)
-        
-        stats = handler.worker_pool.get_stats()
-        
-        logging.info(f"Cleanup:")
-        logging.info(f"  - Processed: {stats['cleanup']['processed']}")
-        logging.info(f"  - Errors: {stats['cleanup']['errors']}")
-        
-        logging.info(f"Discovery:")
-        logging.info(f"  - Processed: {stats['creation']['processed']}")
-        logging.info(f"  - Errors: {stats['creation']['errors']}")
-        
-        logging.info("")
-        logging.info("✓ Target poller completed successfully")
-        logging.info("=" * 70)
+        logging.info("Target poller completed successfully")
         
         sys.exit(0)
         

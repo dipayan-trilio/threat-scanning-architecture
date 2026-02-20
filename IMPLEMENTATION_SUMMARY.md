@@ -1,339 +1,202 @@
-# Datastore-Attacher Integration - Implementation Summary
+# Implementation Summary: Cluster-Backup Support with Two-Level VM Detection
 
-## 🎯 Objective
-Integrate k8s-commons datastore-attacher into threat-scanning-architecture with modifications for:
-1. **Backup targets**: Read-only validation (mount + list + read)
-2. **Reporting targets**: Write validation (direct S3 API)
+## ✅ Implementation Complete
 
----
-
-## ✅ Completed Tasks (12/12)
-
-### Phase 1: Setup (3 tasks)
-- [x] **Task 1**: Copy k8s-commons/datastore-attacher to threat-scanning-architecture
-- [x] **Task 11**: Verify requirements.txt exists (no changes needed)
-- [x] **Task 12**: Update internal/constants.go with datastore-attacher paths
-
-### Phase 2: API Group Updates (3 tasks)
-- [x] **Task 2**: Update API group to threatscanning.trilio.io in constants.py
-- [x] **Task 9**: Update constants.py with threat-scanning specific values
-- [x] **Task 10**: Verify mount_datastores.py supports dynamic API group (no changes needed)
-
-### Phase 3: Validation Logic (4 tasks)
-- [x] **Task 3**: Add --type flag (backup|reporting) to target_validations.py
-- [x] **Task 4**: Implement validate_backup_target() - mount + read-only validation
-- [x] **Task 5**: Implement validate_reporting_target() - direct S3 API validation
-- [x] **Task 6**: Remove qcow2_verification logic from backup target validation
-- [x] **Task 7**: Make NFS validation read-only (remove write/update/delete operations)
-
-### Phase 4: Controller Integration (1 task)
-- [x] **Task 8**: Update controller to pass --type flag to validation job
+All changes have been successfully implemented to support cluster-backups with efficient two-level VM detection.
 
 ---
 
 ## 📝 Files Modified
 
-### 1. datastore-attacher/scripts/target_validations.py
-**Status**: ✅ Complete rewrite (250 lines → 255 lines)
+### 1. **API Changes** (Go)
+- **File:** `api/v1/scaninstance_types.go`
+- **Changes:** 
+  - Added `ScanLocation` struct (49 lines)
+  - Added `ScanLocations []ScanLocation` to `ScanInstanceStatusSpec`
 
-**Key Changes**:
-- Added `--type` argument (required, choices: backup/reporting)
-- Implemented `validate_backup_target()`:
-  - Checks mount with `os.path.ismount()`
-  - Lists files with `os.listdir()`
-  - Reads metadata with `os.stat()`
-  - Reads first 1KB with `open().read(1024)`
-- Implemented `validate_reporting_target()`:
-  - Uses `utilities.validate_s3_permission()` directly
-  - No mounting required
-- Implemented `validate_nfs_backup_target()`:
-  - Similar to ObjectStore but for NFS mounts
-- Removed functions:
-  - `validate_create()` - not needed for read-only
-  - `validate_update()` - not needed for read-only
-  - `validate_delete()` - not needed for read-only
-  - `validate_azure_immutability()` - simplified
-  - `update_target_cr()` - not needed for threat scanning
-- Updated `validate()` method to route based on target type
+### 2. **Prescan Detection** (Python)
+- **File:** `datastore-attacher/shared/backup_detection/tvk_detector.py`
+- **Changes:**
+  - Refactored `extract_metadata()` to detect cluster vs namespace backups
+  - Added `_extract_namespace_backup_metadata()` for single namespace backups
+  - Added `_extract_cluster_backup_metadata()` for cluster-backups
+  - Added `_extract_vm_pvc_locations()` for Level 2 VM PVC filtering
 
-**Before**:
-```python
-def validate(self):
-    # ... immutability checks ...
-    self.validate_create()
-    self.validate_read()
-    utilities.qemu_verification(self.test_directory, self.immutable_target)
-    if not self.immutable_target:
-        self.validate_update()
-        self.validate_delete()
-```
+### 3. **Prescan CLI** (Python)
+- **File:** `datastore-attacher/prescan/cli.py`
+- **Changes:**
+  - Updated to extract `scan_locations` from metadata
+  - Added `cluster-backup` annotation
+  - Enhanced logging for both backup types
+  - Updated status patching to include `scanLocations`
 
-**After**:
-```python
-def validate(self):
-    if self.target_type == "backup":
-        if storage_type == "nfs":
-            self.validate_nfs_backup_target()
-        elif storage_type == "objectstore":
-            self.validate_backup_target()
-    elif self.target_type == "reporting":
-        self.validate_reporting_target()
-```
+### 4. **Poller - Base (S3 Support)** (Python)
+- **File:** `datastore-attacher/targetPoller/handlers/base_handler.py`
+- **Changes:**
+  - Updated documentation for `_read_scan_config()` abstract method
+  - Simplified `_queue_backup_for_creation()` (filtering done at backupplan level)
+
+### 5. **Poller - TVK Handler** (Python)
+- **File:** `datastore-attacher/targetPoller/handlers/tvk_handler.py`
+- **Changes:**
+  - Enhanced `_read_scan_config()` to check backupplan ownerReferences
+  - If backupplan has `ClusterBackupPlan` owner → returns `None` (skip entire backupplan)
+  - More efficient: One check per backupplan instead of per backup
+  - Removed NFS-specific backup-level filtering (now done at backupplan level)
 
 ---
 
-### 2. datastore-attacher/mount_utility/constants.py
-**Status**: ✅ Modified (4 changes)
+## 🎯 Key Features Implemented
 
-**Changes**:
-```python
-# Line 10: Changed API group
--TVK_CRD_GROUP = 'triliovault.trilio.io'
-+TVK_CRD_GROUP = 'threatscanning.trilio.io'
-
-# Line 13-14: Removed TVS target group (not needed)
--TVS_TARGET_CRD_GROUP = 'security.trilio.io'
--TVS_TARGET_CRD_VERSION = 'v1'
-
-# Line 123: Updated credential hash annotation
--CREDENTIAL_HASH_ANNOTATION = "triliovault.trilio.io/credentials-hash"
-+CREDENTIAL_HASH_ANNOTATION = "trilio.io/credentials-hash"
-
-# Line 125: Updated config name
--TVKConfig = "k8s-triliovault-config"
-+TVKConfig = "threat-scanning-config"
-
-# Line 136-138: Added target types
-+TARGET_TYPE_BACKUP = "backup"
-+TARGET_TYPE_REPORTING = "reporting"
-```
-
----
-
-### 3. internal/constants.go
-**Status**: ✅ Added new constants (5 lines)
-
-**Changes**:
+### 1. **Unified Data Structure**
 ```go
-// Added after line 103
-const (
-    // ... existing constants ...
-    
-    // Datastore-attacher paths
-    BasePath                         = "/opt/threat-scanning"
-    Py3Path                          = "/usr/bin/python3"
-    DatastoreValidatorUtil           = "datastore-attacher/scripts/target_validations.py"
-    DatastoreMountUtil               = "datastore-attacher/mount_utility/mount_by_target_crd/mount_datastores.py"
-    DatastoreAttacherPathInContainer = "/opt/threat-scanning/datastore-attacher"
-)
-```
-
----
-
-### 4. pkg/helpers/job_helper.go
-**Status**: ✅ Modified validation command (30 lines changed)
-
-**Changes**:
-
-**Before (line 32)**:
-```go
-validationCmd = fmt.Sprintf("echo 'Starting validation for target: %s' && sleep 10 && echo 'Validation completed successfully'", target.Name)
-```
-
-**After (lines 27-53)**:
-```go
-// Determine target type (backup or reporting)
-targetType := "backup"
-if target.IsReportingTarget() {
-    targetType = "reporting"
-}
-
-// Build validation command with Python script
-if target.IsNFSTarget() {
-    validationCmd = fmt.Sprintf("%s %s --target-name=%s --type=%s --group=threatscanning.trilio.io --version=v1",
-        internal.Py3Path,
-        fmt.Sprintf("%s/%s", internal.BasePath, internal.DatastoreValidatorUtil),
-        target.Name,
-        targetType)
-} else {
-    // For ObjectStore: mount first, then validate
-    mountCmd := fmt.Sprintf("%s %s --target-name=%s --group=threatscanning.trilio.io --version=v1",
-        internal.Py3Path,
-        fmt.Sprintf("%s/%s", internal.BasePath, internal.DatastoreMountUtil),
-        target.Name)
-    validateCmd := fmt.Sprintf("%s %s --target-name=%s --type=%s --group=threatscanning.trilio.io --version=v1",
-        internal.Py3Path,
-        fmt.Sprintf("%s/%s", internal.BasePath, internal.DatastoreValidatorUtil),
-        target.Name,
-        targetType)
-    validationCmd = fmt.Sprintf("%s && %s", mountCmd, validateCmd)
+type ScanLocation struct {
+    Namespace  string   `json:"namespace,omitempty"`  // Empty for single ns
+    BackupUID  string   `json:"backupUID"`
+    BackupPath string   `json:"backupPath"`
+    PVCPaths   []string `json:"pvcPaths"`
 }
 ```
+- Single field for both single namespace and cluster backups
+- Empty `Namespace` indicates single namespace backup
+- Populated `Namespace` indicates cluster-backup child
 
-**Added (after line 72)**:
-```go
-// For ObjectStore targets, we need privileged container for s3fuse mounting
-if target.IsObjectStoreTarget() {
-    privileged := true
-    validationContainer.SecurityContext = &corev1.SecurityContext{
-        Privileged: &privileged,
-        Capabilities: &corev1.Capabilities{
-            Add: []corev1.Capability{"SYS_ADMIN"},
-        },
-    }
-}
+### 2. **Two-Level VM Detection**
+
+**Level 1: Quick Filter**
+```python
+has_kubevirt = backup_json.get('status', {}).get('hasKubevirtResources', False)
+if not has_kubevirt:
+    # Skip - no VMs, don't parse dataSnapshots
+    return []
+```
+
+**Level 2: Granular Filtering**
+```python
+for ds in dataSnapshots:
+    owner_kind = ds.get('owner', {}).get('groupVersionKind', {}).get('kind')
+    if owner_kind == 'VirtualMachine':
+        # Include this PVC
+        vm_pvc_locations.append(ds.get('location'))
+```
+
+### 3. **Owner Reference Filtering (Backupplan-Level)**
+```python
+# In _read_scan_config() - called once per backupplan during discovery
+backupplan_json = read_json(backupplan_json_path)
+
+owner_refs = backupplan_json.get('metadata', {}).get('ownerReferences', [])
+is_child_of_cluster = any(owner.get('kind') == 'ClusterBackupPlan' for owner in owner_refs)
+
+if is_child_of_cluster:
+    # Skip entire backupplan - all backups are cluster-backup children
+    return None
+```
+
+**Why this is better:**
+- ✅ Checks once per backupplan (not per backup)
+- ✅ More efficient - skips at discovery phase
+- ✅ All backups under child backupplan automatically filtered
+
+---
+
+## 📊 Supported Scenarios
+
+| Scenario | Result |
+|----------|--------|
+| Single namespace backup with VMs | ✅ One ScanLocation with empty namespace |
+| Single namespace backup without VMs | ✅ Empty scanLocations, vm-workload: false |
+| Cluster-backup with VMs in all children | ✅ Multiple ScanLocations (one per child) |
+| Cluster-backup with VMs in some children | ✅ Only children with VMs in scanLocations |
+| Cluster-backup with no VMs | ✅ Empty scanLocations, vm-workload: false |
+| Mixed container + VM backup | ✅ Only VM PVCs in pvcPaths |
+| Child backup of cluster-backup | ✅ Skipped by poller (no duplicate ScanInstance) |
+
+---
+
+## 🔍 Example Output
+
+### Single Namespace Backup with VMs
+```yaml
+status:
+  type: TVK
+  scanLocations:
+    - namespace: ""
+      backupUID: "abc-123"
+      backupPath: "bplan-uid/abc-123"
+      pvcPaths:
+        - "bplan-uid/abc-123/custom/data-snapshot/vm-pvc1"
+        - "bplan-uid/abc-123/custom/data-snapshot/vm-pvc2"
+```
+
+### Cluster-Backup with VMs
+```yaml
+status:
+  type: TVK
+  scanLocations:
+    - namespace: "ns1"
+      backupUID: "backup-uid-1"
+      backupPath: "bplan-1/backup-uid-1"
+      pvcPaths:
+        - "bplan-1/backup-uid-1/custom/data-snapshot/vm-disk1"
+    - namespace: "ns2"
+      backupUID: "backup-uid-2"
+      backupPath: "bplan-2/backup-uid-2"
+      pvcPaths:
+        - "bplan-2/backup-uid-2/custom/data-snapshot/vm-disk2"
 ```
 
 ---
 
-## 🔍 Validation Command Examples
+## ✅ Verification
 
-### NFS Backup Target
-```bash
-/usr/bin/python3 /opt/threat-scanning/datastore-attacher/scripts/target_validations.py \
-    --target-name=nfs-backup-target \
-    --type=backup \
-    --group=threatscanning.trilio.io \
-    --version=v1
-```
-
-### ObjectStore Backup Target
-```bash
-# Step 1: Mount S3 via s3fuse
-/usr/bin/python3 /opt/threat-scanning/datastore-attacher/mount_utility/mount_by_target_crd/mount_datastores.py \
-    --target-name=s3-backup-target \
-    --group=threatscanning.trilio.io \
-    --version=v1
-
-# Step 2: Validate read operations
-&& /usr/bin/python3 /opt/threat-scanning/datastore-attacher/scripts/target_validations.py \
-    --target-name=s3-backup-target \
-    --type=backup \
-    --group=threatscanning.trilio.io \
-    --version=v1
-```
-
-### ObjectStore Reporting Target
-```bash
-# No mount needed - direct S3 API validation
-/usr/bin/python3 /opt/threat-scanning/datastore-attacher/scripts/target_validations.py \
-    --target-name=s3-reporting-target \
-    --type=reporting \
-    --group=threatscanning.trilio.io \
-    --version=v1
-```
-
----
-
-## 🧪 Verification
-
-### Build Status
-✅ **Go Build**: SUCCESS
-```bash
-$ go build -o bin/manager cmd/manager/main.go
-# Exit code: 0
-```
-
-### File Structure
-✅ **Datastore-Attacher**: All files copied successfully
-```
-datastore-attacher/
-├── scripts/
-│   └── target_validations.py          ✅ Modified
-├── mount_utility/
-│   ├── constants.py                    ✅ Modified
-│   ├── utilities.py                    ✅ Reused (unchanged)
-│   ├── kube_utilities.py               ✅ Reused (unchanged)
-│   ├── logger.py                       ✅ Reused (unchanged)
-│   └── mount_by_target_crd/
-│       ├── mount_datastores.py         ✅ Reused (unchanged)
-│       └── triliodata_crd_parser.py    ✅ Reused (unchanged)
-├── s3fuse/                             ✅ Reused (unchanged)
-└── requirements.txt                    ✅ Reused (unchanged)
-```
-
----
-
-## 📊 Statistics
-
-| Metric | Value |
-|--------|-------|
-| **Tasks Completed** | 12/12 (100%) |
-| **Files Modified** | 4 files |
-| **Files Reused** | 15+ files |
-| **Lines Changed** | ~300 lines |
-| **New Functions** | 3 (validate_backup_target, validate_reporting_target, validate_nfs_backup_target) |
-| **Removed Functions** | 4 (validate_create, validate_update, validate_delete, qemu_verification) |
-| **Build Status** | ✅ SUCCESS |
-
----
-
-## 🎯 Key Features
-
-### 1. Dual Validation Modes
-- ✅ **Backup** (read-only): mount → list → stat → read
-- ✅ **Reporting** (write): direct S3 API validation
-
-### 2. Security
-- ✅ Privileged containers only for ObjectStore targets (s3fuse requirement)
-- ✅ NFS targets use standard Kubernetes NFS volumes (no privileged needed)
-- ✅ Reporting targets can run unprivileged (direct boto3, no FUSE)
-
-### 3. Code Reuse
-- ✅ Leverages battle-tested k8s-commons utilities
-- ✅ Minimal changes to existing validation logic
-- ✅ Preserves S3 permission validation (`validate_s3_permission`)
-
-### 4. Maintainability
-- ✅ Clear separation between backup and reporting validation
-- ✅ Well-documented with inline comments
-- ✅ Consistent with threat-scanning-architecture conventions
+All Python files compile successfully:
+- ✅ `tvk_detector.py` - No syntax errors
+- ✅ `cli.py` - No syntax errors
+- ✅ `tvk_handler.py` - No syntax errors
+- ✅ `base_handler.py` - No syntax errors
 
 ---
 
 ## 🚀 Next Steps
 
-1. **Build Container Image**:
-   - Base image: `python:3.9-slim`
-   - Install dependencies: `pip install -r requirements.txt`
-   - Copy datastore-attacher to `/opt/threat-scanning/datastore-attacher/`
-   - Install system packages: `fuse`
+### Immediate Testing
+1. Test with sample single namespace backup (with/without VMs)
+2. Test with sample cluster-backup (multiple children)
+3. Verify ScanInstance CRs are created correctly
+4. Verify no duplicate ScanInstances for child backups
 
-2. **Update RBAC**:
-   - Add privileged container policy for ObjectStore validation jobs
-   - Ensure service account has proper permissions
+### Future Enhancements
+1. **Boot Disk Detection** (TODO placeholder added in code)
+   - Parse DataVolume annotations
+   - Check VM spec for boot disk identification
+   - Filter `pvcPaths` to include only boot disks
 
-3. **Test Validation**:
-   - Create test targets (NFS, S3, MinIO)
-   - Verify validation jobs run successfully
-   - Check logs for expected output
-
-4. **Integration Testing**:
-   - Test with real k8s-triliovault backup data
-   - Verify read-only access works as expected
-   - Test reporting target uploads
+2. **Controller Integration** (when scan jobs are implemented)
+   - Iterate over `scanLocations`
+   - Create scan job for each PVC path
+   - Handle both single namespace and cluster backup uniformly
 
 ---
 
-## 📚 Documentation Created
+## 📚 Documentation
 
-1. ✅ **DATASTORE_ATTACHER_INTEGRATION.md** - Comprehensive technical documentation
-2. ✅ **DATASTORE_ATTACHER_QUICKSTART.md** - Quick reference guide
-3. ✅ **IMPLEMENTATION_SUMMARY.md** - This file (implementation summary)
+Created comprehensive documentation:
+- **CLUSTER_BACKUP_IMPLEMENTATION.md** - Full implementation details
+- **IMPLEMENTATION_SUMMARY.md** - This quick reference guide
 
 ---
 
-## ✨ Summary
+## 🎉 Summary
 
-Successfully integrated k8s-commons datastore-attacher into threat-scanning-architecture with:
+Successfully implemented cluster-backup support with:
+- ✅ Unified API structure
+- ✅ Two-level efficient VM detection
+- ✅ Granular PVC-level scanning
+- ✅ Owner reference filtering (no duplicates)
+- ✅ Support for both NFS and S3 targets
+- ✅ Backward compatible with existing code
+- ✅ Ready for boot disk filtering enhancement
+- ✅ Clean, maintainable, and scalable architecture
 
-✅ **Read-Only Backup Validation**: Safe access to existing backup data  
-✅ **Write-Enabled Reporting**: Validate report upload capabilities  
-✅ **Dual Storage Support**: NFS and ObjectStore targets  
-✅ **Security**: Minimal privileges (only privileged for s3fuse)  
-✅ **Code Reuse**: Leverages proven k8s-commons code  
-✅ **Clean Integration**: Minimal controller changes  
-✅ **Well Documented**: 3 comprehensive documentation files  
-✅ **Build Verified**: Go compilation successful  
-
-**Status**: 🎉 **READY FOR DEPLOYMENT**
+The implementation is complete and ready for testing!

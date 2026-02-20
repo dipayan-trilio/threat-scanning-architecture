@@ -1,0 +1,113 @@
+# Manual Test Job for Target Poller (ObjectStore Target)
+#
+# This is a one-time Job (not CronJob) for testing the poller manually.
+# 
+# Usage:
+#   1. Update the TARGET_NAME in the env section below
+#   2. Update the RELATED_IMAGE_VALIDATOR if needed
+#   3. Apply: kubectl apply -f test-poller-job-objectstore.yaml
+#   4. Check logs: kubectl logs -n threat-scanning-system test-poller-objectstore
+#   5. Cleanup: kubectl delete job -n threat-scanning-system test-poller-objectstore
+#
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-poller-objectstore
+  labels:
+    app.kubernetes.io/name: threat-scanning
+    app.kubernetes.io/component: test-poller
+    app.kubernetes.io/managed-by: manual-test
+spec:
+  # Don't retry on failure for testing
+  backoffLimit: 0
+  # Auto-cleanup after 1 hour
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: threat-scanning
+        app.kubernetes.io/component: test-poller
+    spec:
+      serviceAccountName: trilio-threat-scanning
+      restartPolicy: Never
+      
+      containers:
+      - name: poller
+        # Update this image if needed
+        image: eu.gcr.io/amazing-chalice-243510/threatscanning/datastore-attacher:v2
+        imagePullPolicy: IfNotPresent
+        
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -e
+            echo "=========================================="
+            echo "Target Poller Test Job"
+            echo "=========================================="
+            echo "Target Name: ${TARGET_NAME}"
+            echo "Namespace: ${INSTALL_NAMESPACE}"
+            echo "=========================================="
+            echo ""
+            
+            # Step 1: Mount the datastore
+            echo "Step 1: Mounting datastore..."
+            python3 /opt/threat-scanning/datastore-attacher/mount_utility/mount_by_target_crd/mount_datastores.py \
+              --target-name=${TARGET_NAME} \
+              --group=threatscanning.trilio.io \
+              --version=v1
+            
+            echo ""
+            echo "✓ Datastore mounted successfully to /triliodata"
+            echo ""
+            
+            # Step 2: Run the poller
+            echo "Step 2: Running target poller..."
+            target-poller \
+              --target-name=${TARGET_NAME} \
+              --group=threatscanning.trilio.io \
+              --version=v1
+            
+            echo ""
+            echo "=========================================="
+            echo "✓ Poller completed successfully"
+            echo "=========================================="
+        
+        env:
+        # ============================================================
+        # UPDATE THIS: Change to your target name
+        # ============================================================
+        - name: TARGET_NAME
+          value: "minio-target"  # Change this to your target name
+        
+        # ============================================================
+        # UPDATE THIS: Change to your image if needed
+        # ============================================================
+        - name: RELATED_IMAGE_VALIDATOR
+          value: "eu.gcr.io/amazing-chalice-243510/threatscanning/datastore-attacher:v2"
+        
+        - name: INSTALL_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        
+        # Required for s3fuse and mounting
+        securityContext:
+          privileged: true
+          capabilities:
+            add:
+            - SYS_ADMIN
+        
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        
+        # Volumes will be added here if needed (secrets, configmaps)
+        # For ObjectStore targets, credentials are fetched from the Target CR
+        volumeMounts: []
+      
+      volumes: []
+

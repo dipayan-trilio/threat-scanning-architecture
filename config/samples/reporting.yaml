@@ -1,0 +1,19 @@
+apiVersion: threatscanning.trilio.io/v1
+kind: Target
+metadata:
+  name: reporting-target
+  annotations:
+    trilio.io/reporting-target: "true"
+spec:
+  type: ObjectStore
+  vendor: Other
+  objectStoreCredentials:
+    url: https://api.minio.k8strilio.net
+    region: us-east-1
+    bucketName: dipayan-et
+    credentialSecret:
+      name: minio-target-secret
+      namespace: default
+    skipCertVerification: true
+  thresholdCapacity: 100Gi
+

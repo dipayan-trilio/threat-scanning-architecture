@@ -263,3 +263,25 @@ func (in *Target) LastMatchingTargetCondition(condition TargetCondition) *Target
 	}
 	return nil
 }
+
+// HasValidationCondition checks if validation condition with given status already exists
+func (in *Target) HasValidationCondition(status Status) bool {
+	for i := len(in.Status.Condition) - 1; i >= 0; i-- {
+		cond := in.Status.Condition[i]
+		if cond.Phase == ValidationOperation && cond.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+// IsValidationCompleted checks if validation has completed (either Completed or Failed)
+func (in *Target) IsValidationCompleted() bool {
+	for i := len(in.Status.Condition) - 1; i >= 0; i-- {
+		cond := in.Status.Condition[i]
+		if cond.Phase == ValidationOperation && (cond.Status == Completed || cond.Status == Failed) {
+			return true
+		}
+	}
+	return false
+}

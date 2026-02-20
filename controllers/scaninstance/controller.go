@@ -8,7 +8,6 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -36,6 +35,7 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=threatscanning.trilio.io,resources=scaninstances,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=threatscanning.trilio.io,resources=scaninstances/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile will be executed on every change for ScanInstance API resource
@@ -72,6 +72,32 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 	}
 
+	// Cleanup jobs if ScanInstance has completed successfully
+	// Following TVK pattern: jobs are cleaned up only after the entire process completes
+	if scanInstance.Status.Status == v1.ScanCompleted {
+		log.Info("ScanInstance completed, cleaning up jobs")
+		if err := r.cleanupScanInstanceJobs(ctx, scanInstance); err != nil {
+			// Log error but don't fail reconciliation - cleanup is best-effort
+			r.Log.WithError(err).Error("error while cleaning up scan instance jobs")
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Check if PreScan phase is already completed (idempotency check)
+	// If controller restarts, we should not recreate the job or reprocess
+	if scanInstance.HasCondition(v1.PreScan, v1.Completed) {
+		log.Info("PreScan phase already completed, proceeding to scan phase")
+		// Proceed to scan phase
+		return r.reconcileScanPhase(ctx, scanInstance, originalScanInstance)
+	}
+
+	// Check if PreScan phase has failed (terminal state)
+	// Keep failed jobs for debugging - they will be cleaned up when ScanInstance is deleted
+	if scanInstance.HasCondition(v1.PreScan, v1.Failed) {
+		log.Info("PreScan phase has failed, ScanInstance is in terminal state")
+		return ctrl.Result{}, nil
+	}
+
 	// Get or create preScan job
 	preScanJob, err := r.getPreScanJob(ctx, scanInstance)
 	if err != nil {
@@ -79,15 +105,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
-	// If preScan job doesn't exist, create it
+	// If preScan job doesn't exist and PreScan hasn't started, create it
 	if preScanJob == nil {
-		// Update condition to PreScan InProgress
-		if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.PreScan, v1.InProgress,
-			"Starting pre-scan validation"); uErr != nil {
-			return ctrl.Result{}, uErr
-		}
-		if uErr := r.updateScanInstanceStatus(ctx, scanInstance, originalScanInstance, v1.ScanInProgress); uErr != nil {
-			return ctrl.Result{}, uErr
+		// Check if we already have a PreScan/InProgress condition (idempotency)
+		if !scanInstance.HasCondition(v1.PreScan, v1.InProgress) {
+			// Update condition to PreScan InProgress
+			if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.PreScan, v1.InProgress,
+				"Starting pre-scan validation"); uErr != nil {
+				return ctrl.Result{}, uErr
+			}
+			if uErr := r.updateScanInstanceStatus(ctx, scanInstance, originalScanInstance, v1.ScanInProgress); uErr != nil {
+				return ctrl.Result{}, uErr
+			}
 		}
 
 		// Create preScan job
@@ -121,69 +150,63 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	switch jobStatus {
 	case v1.Completed:
 		// PreScan completed successfully
-		// Only update if not already in completed state
-		if scanInstance.Status.Status != v1.ScanCompleted {
-			// Check if we already have a PreScan/Completed condition to avoid duplicates
-			hasCompletedCondition := false
-			for _, cond := range scanInstance.Status.Condition {
-				if cond.Phase == v1.PreScan && cond.Status == v1.Completed {
-					hasCompletedCondition = true
-					break
-				}
+		// Check idempotency - only update if condition doesn't exist
+		if !scanInstance.HasCondition(v1.PreScan, v1.Completed) {
+			if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.PreScan, v1.Completed,
+				"Pre-scan validation completed successfully"); uErr != nil {
+				return ctrl.Result{}, uErr
 			}
 
-			if !hasCompletedCondition {
-				if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.PreScan, v1.Completed,
-					"Pre-scan validation completed successfully"); uErr != nil {
-					return ctrl.Result{}, uErr
-				}
-
-				r.Recorder.Eventf(scanInstance, corev1.EventTypeNormal, "PreScanCompleted",
-					"Pre-scan completed successfully for ScanInstance: %s", scanInstance.Name)
-			}
-
-			// TODO: Proceed to create scan job
-			// For now, mark as completed since we're using placeholders
-			// if uErr := r.updateScanInstanceStatus(ctx, scanInstance, originalScanInstance, v1.ScanCompleted); uErr != nil {
-			// 	return ctrl.Result{}, uErr
-			// }
+			r.Recorder.Eventf(scanInstance, corev1.EventTypeNormal, "PreScanCompleted",
+				"Pre-scan completed successfully for ScanInstance: %s", scanInstance.Name)
 		}
+
+		// Proceed to scan phase
+		return r.reconcileScanPhase(ctx, scanInstance, originalScanInstance)
 
 	case v1.Failed:
 		// PreScan failed
-		// Only update if not already in failed state
-		if scanInstance.Status.Status != v1.ScanFailed {
-			// Check if we already have a PreScan/Failed condition to avoid duplicates
-			hasFailedCondition := false
-			for _, cond := range scanInstance.Status.Condition {
-				if cond.Phase == v1.PreScan && cond.Status == v1.Failed {
-					hasFailedCondition = true
-					break
+		// Check idempotency - only update if condition doesn't exist
+		if !scanInstance.HasCondition(v1.PreScan, v1.Failed) {
+			// Refetch job to get latest annotations (prescan container updates them)
+			// Following TVK datamover pattern: job updates its own annotations, controller reads them
+			latestJob, err := r.getPreScanJob(ctx, scanInstance)
+			if err != nil {
+				log.WithError(err).Error("error refetching prescan job for error annotation")
+				// Continue with existing job if refetch fails
+				latestJob = preScanJob
+			}
+			if latestJob == nil {
+				// Job was deleted, use the one we have
+				latestJob = preScanJob
+			}
+
+			// Read error message from job annotation if available
+			// Prescan sets concise error message (traceback is in job logs)
+			errorReason := "Pre-scan validation failed"
+			if latestJob.Annotations != nil {
+				if errMsg, ok := latestJob.Annotations[internal.PrescanErrorAnnotation]; ok && errMsg != "" {
+					errorReason = errMsg
 				}
 			}
 
-			if !hasFailedCondition {
-				if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.PreScan, v1.Failed,
-					"Pre-scan validation failed"); uErr != nil {
-					return ctrl.Result{}, uErr
-				}
-
-				r.Recorder.Eventf(scanInstance, corev1.EventTypeWarning, "PreScanFailed",
-					"Pre-scan failed for ScanInstance: %s", scanInstance.Name)
+			if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.PreScan, v1.Failed,
+				errorReason); uErr != nil {
+				return ctrl.Result{}, uErr
 			}
+
+			// Generate event with the error message
+			r.Recorder.Eventf(scanInstance, corev1.EventTypeWarning, "PreScanFailed",
+				"Pre-scan failed for ScanInstance %s: %s", scanInstance.Name, errorReason)
 
 			if uErr := r.updateScanInstanceStatus(ctx, scanInstance, originalScanInstance, v1.ScanFailed); uErr != nil {
 				return ctrl.Result{}, uErr
 			}
 		}
 
-		// Delete the failed job (idempotent - safe to call multiple times)
-		propagationPolicy := metav1.DeletePropagationBackground
-		if dErr := r.Client.Delete(ctx, preScanJob, &client.DeleteOptions{PropagationPolicy: &propagationPolicy}); dErr != nil {
-			if !apierrors.IsNotFound(dErr) {
-				return ctrl.Result{}, dErr
-			}
-		}
+		// Keep failed job for debugging - it will be cleaned up when ScanInstance is deleted
+		// Following TVK pattern: failed jobs are kept for log inspection
+		log.Debug("PreScan job failed, keeping job for debugging")
 
 	case v1.InProgress:
 		// PreScan still in progress
@@ -195,40 +218,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 		// Check if job is stuck
 		if helpers.IsJobPendingDeadlineExceeded(preScanJob) {
-			// Only update if not already failed
-			if scanInstance.Status.Status != v1.ScanFailed {
-				// Check if we already have a timeout condition to avoid duplicates
-				hasTimeoutCondition := false
-				for _, cond := range scanInstance.Status.Condition {
-					if cond.Phase == v1.PreScan && cond.Status == v1.Failed &&
-						cond.Reason == "Pre-scan job pending deadline exceeded" {
-						hasTimeoutCondition = true
-						break
-					}
+			// Check idempotency - only update if no failed condition exists
+			if !scanInstance.HasCondition(v1.PreScan, v1.Failed) {
+				if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.PreScan, v1.Failed,
+					"Pre-scan job pending deadline exceeded"); uErr != nil {
+					return ctrl.Result{}, uErr
 				}
 
-				if !hasTimeoutCondition {
-					if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.PreScan, v1.Failed,
-						"Pre-scan job pending deadline exceeded"); uErr != nil {
-						return ctrl.Result{}, uErr
-					}
-
-					r.Recorder.Eventf(scanInstance, corev1.EventTypeWarning, "PreScanTimeout",
-						"Pre-scan job timed out for ScanInstance: %s", scanInstance.Name)
-				}
+				r.Recorder.Eventf(scanInstance, corev1.EventTypeWarning, "PreScanTimeout",
+					"Pre-scan job timed out for ScanInstance: %s", scanInstance.Name)
 
 				if uErr := r.updateScanInstanceStatus(ctx, scanInstance, originalScanInstance, v1.ScanFailed); uErr != nil {
 					return ctrl.Result{}, uErr
 				}
 			}
 
-			// Delete the stuck job (idempotent - safe to call multiple times)
-			propagationPolicy := metav1.DeletePropagationBackground
-			if dErr := r.Client.Delete(ctx, preScanJob, &client.DeleteOptions{PropagationPolicy: &propagationPolicy}); dErr != nil {
-				if !apierrors.IsNotFound(dErr) {
-					return ctrl.Result{}, dErr
-				}
-			}
+			// Keep stuck job for debugging - it will be cleaned up when ScanInstance is deleted
+			// Following TVK pattern: failed/stuck jobs are kept for log inspection
+			log.Debug("PreScan job exceeded pending deadline, keeping job for debugging")
 			return ctrl.Result{}, nil
 		}
 

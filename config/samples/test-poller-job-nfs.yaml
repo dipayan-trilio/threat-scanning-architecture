@@ -1,0 +1,115 @@
+# Manual Test Job for Target Poller (NFS Target)
+#
+# This is a one-time Job (not CronJob) for testing the poller manually with NFS targets.
+# 
+# Usage:
+#   1. Update the TARGET_NAME in the env section below
+#   2. Update the NFS server and path in the volumes section
+#   3. Update the RELATED_IMAGE_VALIDATOR if needed
+#   4. Apply: kubectl apply -f test-poller-job-nfs.yaml
+#   5. Check logs: kubectl logs -n threat-scanning-system test-poller-nfs
+#   6. Cleanup: kubectl delete job -n threat-scanning-system test-poller-nfs
+#
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-poller-nfs
+  namespace: threat-scanning-system
+  labels:
+    app.kubernetes.io/name: threat-scanning
+    app.kubernetes.io/component: test-poller
+    app.kubernetes.io/managed-by: manual-test
+spec:
+  # Don't retry on failure for testing
+  backoffLimit: 0
+  # Auto-cleanup after 1 hour
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: threat-scanning
+        app.kubernetes.io/component: test-poller
+    spec:
+      serviceAccountName: trilio-threat-scanning
+      restartPolicy: Never
+      
+      containers:
+      - name: poller
+        # Update this image if needed
+        image: your-registry/datastore-attacher:latest
+        imagePullPolicy: IfNotPresent
+        
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -e
+            echo "=========================================="
+            echo "Target Poller Test Job (NFS)"
+            echo "=========================================="
+            echo "Target Name: ${TARGET_NAME}"
+            echo "Namespace: ${INSTALL_NAMESPACE}"
+            echo "=========================================="
+            echo ""
+            
+            # For NFS targets, no mount command needed
+            # NFS is already mounted via Kubernetes volume
+            echo "NFS volume mounted at: /mnt/target"
+            ls -la /mnt/target || echo "Warning: /mnt/target not accessible"
+            echo ""
+            
+            # Run the poller
+            echo "Running target poller..."
+            target-poller \
+              --target-name=${TARGET_NAME} \
+              --group=threatscanning.trilio.io \
+              --version=v1
+            
+            echo ""
+            echo "=========================================="
+            echo "✓ Poller completed successfully"
+            echo "=========================================="
+        
+        env:
+        # ============================================================
+        # UPDATE THIS: Change to your NFS target name
+        # ============================================================
+        - name: TARGET_NAME
+          value: "nfs-target"  # Change this to your NFS target name
+        
+        # ============================================================
+        # UPDATE THIS: Change to your image if needed
+        # ============================================================
+        - name: RELATED_IMAGE_VALIDATOR
+          value: "your-registry/datastore-attacher:latest"
+        
+        - name: INSTALL_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        
+        # NFS targets don't need privileged mode
+        securityContext:
+          privileged: false
+        
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        
+        volumeMounts:
+        - name: nfs-target
+          mountPath: /mnt/target
+      
+      volumes:
+      - name: nfs-target
+        nfs:
+          # ============================================================
+          # UPDATE THIS: Change to your NFS server and path
+          # ============================================================
+          server: nfs.example.com  # Change to your NFS server
+          path: /exports/backups   # Change to your NFS export path
+
+

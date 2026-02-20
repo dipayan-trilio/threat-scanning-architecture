@@ -100,6 +100,37 @@ type ScanInstanceSpec struct {
 	BackupRef BackupReference `json:"backupRef"`
 }
 
+// VMInfo contains information about a VM and its PVCs that need scanning
+type VMInfo struct {
+	// VMName is the name of the VirtualMachine
+	VMName string `json:"vmName"`
+
+	// PVCPaths contains the list of PVC paths for this VM
+	// For now, includes all VM PVCs (boot disk + data disks)
+	// Future: Will be filtered to include only the boot disk
+	PVCPaths []string `json:"pvcPaths"`
+}
+
+// ScanLocation represents a backup location with VMs to scan
+type ScanLocation struct {
+	// Namespace is the namespace of the backup
+	// Empty for single namespace backups (non-cluster)
+	// +kubebuilder:validation:Optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// BackupUID is the UID of the backup
+	BackupUID string `json:"backupUID"`
+
+	// BackupPath is the relative path to the backup directory
+	BackupPath string `json:"backupPath"`
+
+	// VMs contains the list of VMs with their PVC paths that need scanning
+	// Each VM entry groups all PVCs belonging to that VM
+	// For now, includes all VM PVCs (boot + data disks)
+	// Future: Will be filtered to include only boot disks
+	VMs []VMInfo `json:"vms"`
+}
+
 // ScanInstanceStatusSpec defines the observed state of ScanInstance
 type ScanInstanceStatusSpec struct {
 	// Type is the type of backup (TVK or TVO)
@@ -123,13 +154,21 @@ type ScanInstanceStatusSpec struct {
 	// +nullable:true
 	// +kubebuilder:validation:Optional
 	Report string `json:"report,omitempty"`
+
+	// ScanLocations contains the list of backup locations to scan with their VM PVC paths
+	// For single namespace backup: One entry with empty Namespace field
+	// For cluster-backup: Multiple entries (one per child backup that has VMs)
+	// If this list is empty, no VM workloads need scanning
+	// +nullable:true
+	// +kubebuilder:validation:Optional
+	ScanLocations []ScanLocation `json:"scanLocations,omitempty"`
 }
 
 // ScanInstance represents a single scan operation for a backup.
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
+// +kubebuilder:resource:scope=Cluster,shortName=si
 // +kubebuilder:printcolumn:name="BackupTarget",type=string,JSONPath=`.spec.backupTarget.name`
 // +kubebuilder:printcolumn:name="BackupPath",type=string,JSONPath=`.spec.backupRef.path`
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.status.type`
@@ -162,6 +201,28 @@ func (in *ScanInstance) LastMatchingScanInstanceCondition(condition ScanInstance
 		cond := in.Status.Condition[i]
 		if cond.Phase == condition.Phase && cond.Status == condition.Status {
 			return &cond
+		}
+	}
+	return nil
+}
+
+// HasCondition checks if a specific phase/status condition exists
+// This is used for idempotency - to avoid reprocessing completed phases
+func (in *ScanInstance) HasCondition(phase ScanPhase, status Status) bool {
+	for _, cond := range in.Status.Condition {
+		if cond.Phase == phase && cond.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+// GetLastConditionForPhase returns the last condition for a specific phase
+// Useful for checking if a phase is in progress, completed, or failed
+func (in *ScanInstance) GetLastConditionForPhase(phase ScanPhase) *ScanInstanceCondition {
+	for i := len(in.Status.Condition) - 1; i >= 0; i-- {
+		if in.Status.Condition[i].Phase == phase {
+			return &in.Status.Condition[i]
 		}
 	}
 	return nil

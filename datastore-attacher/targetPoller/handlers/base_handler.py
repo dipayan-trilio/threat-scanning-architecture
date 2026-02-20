@@ -128,12 +128,15 @@ class BaseTargetHandler(ABC):
         Implementation is type-specific (TVK vs TVO).
         Uses the backup type to determine which backupplan file to read.
         
+        Also checks if backupplan is a child of ClusterBackupPlan (via ownerReferences).
+        If yes, returns None to skip this backupplan entirely.
+        
         Args:
             backupplan_uid: BackupPlan UID (since it's not stored in BackupObject)
             backup: BackupObject containing backup details including type
             
         Returns:
-            ScanConfig object or None if not found/configured
+            ScanConfig object or None if not found/configured/child of cluster
         """
         pass
     
@@ -144,20 +147,23 @@ class BaseTargetHandler(ABC):
         Initialize the handler.
         
         Steps:
-        1. Detect backup type
+        1. Detect backup type (if not already detected by factory)
         2. Populate storage state
         3. Start worker threads
         """
-        self.logger.info(f"=== INITIALIZATION PHASE ===")
+        self.logger.info("Starting initialization phase")
         
-        # Step 1: Detect backup type
-        backup_type = self.detect_backup_type()
-        self.logger.info(f"Detected backup type: {backup_type}")
-        
-        if backup_type == 'UNKNOWN':
-            raise RuntimeError(
-                f"Could not determine backup type for target {self.target_name}"
-            )
+        # Step 1: Detect backup type (skip if already detected by factory)
+        if not hasattr(self, 'backup_type_detected') or not self.backup_type_detected:
+            backup_type = self.detect_backup_type()
+            self.logger.info(f"Detected backup type: {backup_type}")
+            
+            if backup_type == 'UNKNOWN':
+                raise RuntimeError(
+                    f"Could not determine backup type for target {self.target_name}"
+                )
+        else:
+            self.logger.info(f"Backup type already detected by factory: {self.backup_type}")
         
         # Step 2: Populate storage state
         self.logger.info("Populating storage state...")
@@ -170,7 +176,7 @@ class BaseTargetHandler(ABC):
         # Step 3: Start worker threads
         self.logger.info("Starting worker threads...")
         self.worker_pool.start_all_workers(self.k8s_client, self.target_cr)
-        self.logger.info("✓ Initialization complete")
+        self.logger.info("Completed initialization phase")
     
     # ============= Cleanup Phase =============
     
@@ -187,7 +193,7 @@ class BaseTargetHandler(ABC):
            - If backup not in storage_state → Queue for cleanup
         4. Wait for cleanup queue to finish
         """
-        self.logger.info(f"=== CLEANUP PHASE ===")
+        self.logger.info("Starting cleanup phase")
         
         # Step 1: List all ScanInstances for this target
         # Use target name for filtering (matches label set at creation)
@@ -281,13 +287,8 @@ class BaseTargetHandler(ABC):
         # Step 4: Wait for cleanup to complete
         if stale_count > 0:
             self.worker_pool.wait_for_cleanup_completion()
-            stats = self.worker_pool.get_stats()
-            self.logger.info(
-                f"✓ Cleanup complete: {stats['cleanup']['processed']} deleted, "
-                f"{stats['cleanup']['errors']} errors"
-            )
-        else:
-            self.logger.info("✓ No stale ScanInstances found")
+        
+        self.logger.info("Completed cleanup phase")
     
     # ============= Discovery Phase =============
     
@@ -305,13 +306,13 @@ class BaseTargetHandler(ABC):
            e. If scanEnabled=true, scanOldBackups=true: Process all unprocessed backups
         3. Wait for creation queue to finish
         """
-        self.logger.info(f"=== DISCOVERY PHASE ===")
+        self.logger.info("Starting discovery phase")
         
         # Step 1: Refresh storage state
         self.logger.info("Refreshing storage state...")
         self.refresh_storage_state()
         self.logger.info(
-            f"✓ Storage state refreshed: {self.storage_state.total_backupplans} backupplans, "
+            f"Storage state refreshed: {self.storage_state.total_backupplans} backupplans, "
             f"{self.storage_state.total_backups} backups"
         )
         
@@ -319,27 +320,16 @@ class BaseTargetHandler(ABC):
         backupplan_uids = self.storage_state.get_all_backupplan_uids()
         self.logger.info(f"Processing {len(backupplan_uids)} backupplans...")
         
-        processed_count = 0
-        skipped_count = 0
-        
-        for idx, backupplan_uid in enumerate(backupplan_uids, 1):
+        for backupplan_uid in backupplan_uids:
             self.logger.info(f"")
-            self.logger.info(
-                f"Processing backupplan {idx}/{len(backupplan_uids)}: {backupplan_uid}"
-            )
             
             try:
-                result = self._process_backupplan(backupplan_uid)
-                if result:
-                    processed_count += 1
-                else:
-                    skipped_count += 1
+                self._process_backupplan(backupplan_uid)
             except Exception as e:
                 self.logger.error(
                     f"Error processing backupplan {backupplan_uid}: {str(e)}",
                     exc_info=True
                 )
-                skipped_count += 1
         
         # Step 3: Wait for creation queue to finish
         stats = self.worker_pool.get_stats()
@@ -349,35 +339,25 @@ class BaseTargetHandler(ABC):
             )
             self.worker_pool.wait_for_creation_completion()
         
-        # Final stats
-        final_stats = self.worker_pool.get_stats()
-        self.logger.info(
-            f"✓ Discovery complete: {processed_count} backupplans processed, "
-            f"{skipped_count} skipped, "
-            f"{final_stats['creation']['processed']} ScanInstances created, "
-            f"{final_stats['creation']['errors']} errors"
-        )
+        self.logger.info("Completed discovery phase")
     
-    def _process_backupplan(self, backupplan_uid: str) -> bool:
+    def _process_backupplan(self, backupplan_uid: str):
         """
         Process a single backupplan for discovery.
-        
-        Returns:
-            True if backupplan was processed, False if skipped
         """
         # Get latest backup
         latest_backup = self.get_latest_backup_for_backupplan(backupplan_uid)
         
         if not latest_backup:
             self.logger.warning(f"  No backups found for backupplan {backupplan_uid}")
-            return False
+            return
         
         self.logger.info(f"  Latest backup: {latest_backup.backup_uid}")
         
         # Check if latest backup is available and process
-        return self._process_backup_chain(backupplan_uid, latest_backup)
+        self._process_backup_chain(backupplan_uid, latest_backup)
     
-    def _process_backup_chain(self, backupplan_uid: str, latest_backup: BackupObject) -> bool:
+    def _process_backup_chain(self, backupplan_uid: str, latest_backup: BackupObject):
         """
         Process backup chain starting from latest backup.
         
@@ -399,17 +379,17 @@ class BaseTargetHandler(ABC):
                     f"    ScanInstance exists for backup {backup.backup_uid}, "
                     f"discovery complete for this backupplan"
                 )
-                return True
+                return
             
             # Step b: Read backupplan.json to get scanConfig
             scan_config = self._read_scan_config(backupplan_uid, backup)
             
             if not scan_config or not scan_config.enabled:
                 self.logger.info(
-                    f"    Scanning not enabled for backupplan {backupplan_uid}, "
+                    f"    Scanning not enabled for backupplan {backupplan_uid} or the backupplan is a child of ClusterBackupPlan, "
                     f"discovery complete"
                 )
-                return False
+                return
             
             # Handle scenarios based on scanOldBackups flag
             if backup == latest_backup and scan_config.scan_old_backups:
@@ -417,7 +397,8 @@ class BaseTargetHandler(ABC):
                 self.logger.info(
                     f"    scanOldBackups=true, processing all unprocessed backups"
                 )
-                return self._process_all_unprocessed_backups(backupplan_uid, all_backups)
+                self._process_all_unprocessed_backups(backupplan_uid, all_backups)
+                return
             else:
                 # Scenario 1: Process this backup and continue to older backups
                 self.logger.info(f"    Queueing backup {backup.backup_uid} for ScanInstance creation")
@@ -426,14 +407,12 @@ class BaseTargetHandler(ABC):
                 # Continue to previous backup
                 # Will stop when: scanEnabled=false, scanConfig missing, or ScanInstance exists
                 continue
-        
-        return True
     
     def _process_all_unprocessed_backups(
         self,
         backupplan_uid: str,
         all_backups: List[BackupObject]
-    ) -> bool:
+    ):
         """
         Process all unprocessed backups for a backupplan (scanOldBackups=true scenario).
         """
@@ -453,7 +432,6 @@ class BaseTargetHandler(ABC):
             queued_count += 1
         
         self.logger.info(f"    Queued {queued_count} backups for ScanInstance creation")
-        return True
     
     def _is_backup_available(self, backup: BackupObject) -> bool:
         """Check if backup status is Available"""
@@ -490,7 +468,13 @@ class BaseTargetHandler(ABC):
         )
     
     def _queue_backup_for_creation(self, backupplan_uid: str, backup: BackupObject):
-        """Queue a backup for ScanInstance creation"""
+        """
+        Queue a backup for ScanInstance creation.
+        
+        Note: Child backupplans (owned by ClusterBackupPlan) are filtered in
+        _read_scan_config() method. This is more efficient than checking each
+        backup individually.
+        """
         backup_path = os.path.join(backupplan_uid, backup.backup_uid)
         
         message = CreationMessage(

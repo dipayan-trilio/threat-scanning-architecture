@@ -6,8 +6,7 @@ import os
 import re
 import subprocess
 import json
-import tempfile
-from typing import Optional, Dict
+from typing import Dict, Optional
 
 from .base_detector import BaseBackupDetector
 from mount_utility import constants
@@ -115,131 +114,46 @@ class TVKBackupDetector(BaseBackupDetector):
             self.logger.error(f"Error scanning NFS for backup markers: {str(e)}")
             return 'UNKNOWN'
     
-    def detect_vm_workload(self, backup_path: str) -> bool:
-        """
-        Detect if TVK backup contains VM workload.
-        
-        Mounts metadata-snapshot.qcow2 and checks for KubeVirt resources.
-        
-        Args:
-            backup_path: Full path to backup directory
-            
-        Returns:
-            True if VM workload detected, False otherwise
-        """
-        metadata_qcow2 = os.path.join(backup_path, 'metadata-snapshot.qcow2')
-        
-        if not os.path.exists(metadata_qcow2):
-            # No metadata snapshot, not a VM workload
-            self.logger.info("No metadata-snapshot.qcow2 found, not a VM workload")
-            return False
-        
-        # Create temporary mount point
-        with tempfile.TemporaryDirectory() as mount_dir:
-            nbd_device = None
-            
-            try:
-                # Allocate NBD device
-                nbd_device = self._allocate_nbd_device()
-                if not nbd_device:
-                    self.logger.warning("No free NBD device available, cannot detect VM workload")
-                    return False
-                
-                # Connect qcow2 to NBD (10 minute timeout)
-                subprocess.run(
-                    ['sudo', 'qemu-nbd', '-c', nbd_device, '-r', metadata_qcow2],
-                    check=True,
-                    timeout=600,
-                    capture_output=True
-                )
-                
-                # Wait for device to be ready
-                subprocess.run(
-                    ['sudo', 'partprobe', nbd_device],
-                    check=True,
-                    timeout=30,
-                    capture_output=True
-                )
-                
-                # Give kernel time to detect partitions
-                import time
-                time.sleep(2)
-                
-                # Try to mount - first try partition 1, then raw device
-                mount_device = None
-                partition_device = f"{nbd_device}p1"
-                
-                # Check if partition exists
-                if os.path.exists(partition_device):
-                    mount_device = partition_device
-                    self.logger.info(f"Using partition device: {partition_device}")
-                else:
-                    mount_device = nbd_device
-                    self.logger.info(f"Using raw device: {nbd_device}")
-                
-                # Mount the device (10 minute timeout)
-                subprocess.run(
-                    ['sudo', 'mount', '-o', 'ro', mount_device, mount_dir],
-                    check=True,
-                    timeout=600,
-                    capture_output=True
-                )
-                
-                # Read metadata.json from custom/metadata-snapshot/metadata.json
-                # This is where TVK stores the kubernetes resource metadata
-                metadata_json_path = os.path.join(mount_dir, 'custom', 'metadata-snapshot', 'metadata.json')
-                
-                if not os.path.exists(metadata_json_path):
-                    self.logger.warning(f"metadata.json not found at: {metadata_json_path}")
-                    return False
-                
-                self.logger.info(f"Found metadata.json at: {metadata_json_path}")
-                
-                with open(metadata_json_path, 'r') as f:
-                    metadata = json.load(f)
-                
-                # Check for KubeVirt VM resources
-                is_vm = self._check_vm_resources_in_metadata(metadata)
-                
-                return is_vm
-                
-            except subprocess.CalledProcessError as e:
-                # If mounting fails, assume not a VM workload
-                self.logger.warning(
-                    f"Failed to mount metadata snapshot: {e.stderr if e.stderr else str(e)}"
-                )
-                return False
-            except Exception as e:
-                self.logger.warning(f"Error detecting VM workload: {str(e)}")
-                return False
-            finally:
-                # Cleanup: unmount and disconnect NBD
-                if mount_dir:
-                    subprocess.run(
-                        ['sudo', 'umount', mount_dir],
-                        check=False,
-                        capture_output=True
-                    )
-                
-                if nbd_device:
-                    subprocess.run(
-                        ['sudo', 'qemu-nbd', '-d', nbd_device],
-                        check=False,
-                        capture_output=True
-                    )
-    
     def extract_metadata(self, backup_path: str, backup_uid: str) -> Dict[str, str]:
         """
-        Extract metadata from TVK backup.
+        Extract metadata from TVK backup with two-level VM detection.
         
-        Reads tvk-meta.json and parses backup path structure.
+        Supports both single namespace backups and cluster-backups.
+        Uses two-level detection:
+        - Level 1: hasKubevirtResources (quick check)
+        - Level 2: Parse dataSnapshots to get VM PVC paths (granular filtering)
         
         Args:
             backup_path: Full path to backup directory
             backup_uid: Backup UID from path
             
         Returns:
-            Dict with instance_id, backupplan_uid, backup_uid
+            Dict with instance_id, backupplan_uid, backup_uid, is_vm_workload, scan_locations
+        """
+        # Check if this is a cluster-backup
+        cluster_backup_json_path = os.path.join(backup_path, 'cluster-backup.json')
+        is_cluster_backup = os.path.exists(cluster_backup_json_path)
+        
+        if is_cluster_backup:
+            self.logger.info("Detected cluster-backup, processing child backups")
+            return self._extract_cluster_backup_metadata(backup_path, backup_uid)
+        else:
+            self.logger.info("Detected single namespace backup")
+            return self._extract_namespace_backup_metadata(backup_path, backup_uid)
+    
+    def _extract_namespace_backup_metadata(self, backup_path: str, backup_uid: str) -> Dict:
+        """
+        Extract metadata from single namespace backup with two-level VM detection.
+        
+        Level 1: Check hasKubevirtResources (quick filter)
+        Level 2: Parse dataSnapshots to get VM PVC paths
+        
+        Args:
+            backup_path: Full path to backup directory
+            backup_uid: Backup UID
+            
+        Returns:
+            Dict with metadata and scan_locations
         """
         # Read tvk-meta.json
         tvk_meta_path = os.path.join(backup_path, 'tvk-meta.json')
@@ -253,19 +167,27 @@ class TVKBackupDetector(BaseBackupDetector):
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON in tvk-meta.json: {str(e)}")
         
-        # Extract instance UID from tvkInstanceUID field
+        # Extract instance UID
         instance_id = tvk_meta.get('tvkInstanceUID')
         if not instance_id:
             raise RuntimeError("tvkInstanceUID not found in tvk-meta.json")
         
         self.logger.info(f"Extracted TVK instance UID: {instance_id}")
         
-        # Parse backupplan_uid from path
-        # Path structure: /triliodata/backupplan-uid/backup-uid/
-        # We need to extract the parent directory names
-        path_parts = backup_path.rstrip('/').split('/')
+        # Read backup.json
+        backup_json_path = os.path.join(backup_path, 'backup.json')
         
-        # Get last two parts: backupplan-uid and backup-uid
+        if not os.path.exists(backup_json_path):
+            raise RuntimeError(f"backup.json not found at {backup_json_path}")
+        
+        try:
+            with open(backup_json_path, 'r') as f:
+                backup_json = json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in backup.json: {str(e)}")
+        
+        # Parse path structure
+        path_parts = backup_path.rstrip('/').split('/')
         if len(path_parts) < 2:
             raise RuntimeError(f"Invalid backup path structure: {backup_path}")
         
@@ -279,90 +201,350 @@ class TVKBackupDetector(BaseBackupDetector):
                 f"expected {backup_uid}"
             )
         
+        # LEVEL 1: Quick check - does this backup have ANY kubevirt resources?
+        has_kubevirt = backup_json.get('status', {}).get('hasKubevirtResources', False)
+        
+        scan_locations = []
+        
+        if has_kubevirt:
+            # LEVEL 2: Parse dataSnapshots to get VM PVC map (grouped by VM)
+            self.logger.info("Backup has kubevirt resources, parsing dataSnapshots for VM PVCs")
+            vm_pvc_map = self._extract_vm_pvc_locations(backup_json)
+            
+            if len(vm_pvc_map) > 0:
+                # Convert map to list of VM entries
+                vms = []
+                for vm_name, pvc_paths in vm_pvc_map.items():
+                    vms.append({
+                        'vm_name': vm_name,
+                        'pvc_paths': pvc_paths
+                    })
+                
+                # Create single ScanLocation entry (namespace is empty for single ns backup)
+                relative_backup_path = os.path.join(backupplan_uid, extracted_backup_uid)
+                scan_locations.append({
+                    'namespace': '',  # Empty for non-cluster backup
+                    'backup_uid': extracted_backup_uid,
+                    'backup_path': relative_backup_path,
+                    'vms': vms
+                })
+                
+                total_pvcs = sum(len(pvc_paths) for pvc_paths in vm_pvc_map.values())
+                self.logger.info(
+                    f"Added scan location with {len(vm_pvc_map)} VM(s) and {total_pvcs} PVC(s)"
+                )
+            else:
+                self.logger.warning(
+                    "hasKubevirtResources is true but no VM PVCs found in dataSnapshots. "
+                    "This might indicate VirtualMachine resources without attached disks."
+                )
+        else:
+            self.logger.info(
+                "Backup has no kubevirt resources (hasKubevirtResources=false), "
+                "skipping dataSnapshots parsing"
+            )
+        
+        # Annotation based on final scan_locations length
+        is_vm_workload = len(scan_locations) > 0
+        
         return {
             'instance_id': instance_id,
             'backupplan_uid': backupplan_uid,
-            'backup_uid': extracted_backup_uid
+            'backup_uid': extracted_backup_uid,
+            'is_vm_workload': is_vm_workload,
+            'is_cluster_backup': False,
+            'scan_locations': scan_locations
         }
     
-    def _check_vm_resources_in_metadata(self, metadata_json: list) -> bool:
+    def _extract_cluster_backup_metadata(self, backup_path: str, backup_uid: str) -> Dict:
         """
-        Check if metadata.json contains KubeVirt VM-related resources.
+        Extract metadata from cluster-backup with two-level VM detection.
         
-        Looks for: VirtualMachine, VirtualMachineInstance, DataVolume, VirtualMachinePool
-        
-        TVK metadata.json structure:
-        [
-          {
-            "groupVersionKind": {
-              "group": "kubevirt.io",
-              "version": "v1",
-              "kind": "VirtualMachine"
-            },
-            "metadata": [...],
-            "names": [...],
-            "namespace": "..."
-          },
-          ...
-        ]
+        Iterates through all child backups and applies two-level detection to each.
         
         Args:
-            metadata_json: Parsed metadata.json (array of resource groups)
+            backup_path: Full path to cluster-backup directory
+            backup_uid: Cluster-backup UID
+            
+        Returns:
+            Dict with metadata and scan_locations for all children with VMs
+        """
+        # Read cluster-backup.json
+        cluster_backup_json_path = os.path.join(backup_path, 'cluster-backup.json')
+        
+        if not os.path.exists(cluster_backup_json_path):
+            raise RuntimeError(f"cluster-backup.json not found at {cluster_backup_json_path}")
+        
+        try:
+            with open(cluster_backup_json_path, 'r') as f:
+                cluster_backup_json = json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in cluster-backup.json: {str(e)}")
+        
+        # Read tvk-meta.json
+        tvk_meta_path = os.path.join(backup_path, 'tvk-meta.json')
+        
+        if not os.path.exists(tvk_meta_path):
+            raise RuntimeError(f"tvk-meta.json not found at {tvk_meta_path}")
+        
+        try:
+            with open(tvk_meta_path, 'r') as f:
+                tvk_meta = json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in tvk-meta.json: {str(e)}")
+        
+        # Extract instance UID
+        instance_id = tvk_meta.get('tvkInstanceUID')
+        if not instance_id:
+            raise RuntimeError("tvkInstanceUID not found in tvk-meta.json")
+        
+        self.logger.info(f"Extracted TVK instance UID: {instance_id}")
+        
+        # Parse path structure
+        path_parts = backup_path.rstrip('/').split('/')
+        if len(path_parts) < 2:
+            raise RuntimeError(f"Invalid backup path structure: {backup_path}")
+        
+        extracted_backup_uid = path_parts[-1]
+        backupplan_uid = path_parts[-2]
+        
+        # Validate backup UID matches
+        if extracted_backup_uid != backup_uid:
+            self.logger.warning(
+                f"Backup UID mismatch: path has {extracted_backup_uid}, "
+                f"expected {backup_uid}"
+            )
+        
+        # Get child backup infos
+        backup_infos = cluster_backup_json.get('status', {}).get('backupInfos', {})
+        
+        self.logger.info(f"Cluster-backup has {len(backup_infos)} child backups")
+        
+        # Iterate through all child backups
+        scan_locations = []
+        
+        for ns_name, info in backup_infos.items():
+            child_location = info.get('location')
+            if not child_location:
+                self.logger.warning(f"Child backup '{ns_name}' has no location, skipping")
+                continue
+            
+            child_backup_path = os.path.join('/triliodata', child_location)
+            child_backup_uid = info.get('backup', {}).get('uid')
+            
+            if not child_backup_uid:
+                self.logger.warning(f"Child backup '{ns_name}' has no UID, skipping")
+                continue
+            
+            self.logger.info(f"Processing child backup in namespace '{ns_name}'")
+            
+            # Read child backup.json
+            child_backup_json_path = os.path.join(child_backup_path, 'backup.json')
+            
+            if not os.path.exists(child_backup_json_path):
+                self.logger.warning(f"  backup.json not found for child '{ns_name}', skipping")
+                continue
+            
+            try:
+                with open(child_backup_json_path, 'r') as f:
+                    child_backup_json = json.load(f)
+            except json.JSONDecodeError as e:
+                self.logger.warning(f"  Failed to parse backup.json for child '{ns_name}': {str(e)}")
+                continue
+            except Exception as e:
+                self.logger.warning(f"  Error reading backup.json for child '{ns_name}': {str(e)}")
+                continue
+            
+            # LEVEL 1: Quick check for this child backup
+            child_has_kubevirt = child_backup_json.get('status', {}).get('hasKubevirtResources', False)
+            
+            if not child_has_kubevirt:
+                self.logger.info(
+                    f"  Child backup '{ns_name}' has no kubevirt resources "
+                    f"(hasKubevirtResources=false), skipping"
+                )
+                continue
+            
+            # LEVEL 2: Parse dataSnapshots for VM PVC map (grouped by VM)
+            self.logger.info(
+                f"  Child backup '{ns_name}' has kubevirt resources, parsing dataSnapshots"
+            )
+            
+            vm_pvc_map = self._extract_vm_pvc_locations(child_backup_json)
+            
+            if len(vm_pvc_map) > 0:
+                # Convert map to list of VM entries
+                vms = []
+                for vm_name, pvc_paths in vm_pvc_map.items():
+                    vms.append({
+                        'vm_name': vm_name,
+                        'pvc_paths': pvc_paths
+                    })
+                
+                # Add ScanLocation entry for this child backup
+                scan_locations.append({
+                    'namespace': ns_name,
+                    'backup_uid': child_backup_uid,
+                    'backup_path': child_location,
+                    'vms': vms
+                })
+                
+                total_pvcs = sum(len(pvc_paths) for pvc_paths in vm_pvc_map.values())
+                self.logger.info(
+                    f"  Added scan location for namespace '{ns_name}' with {len(vm_pvc_map)} VM(s) and {total_pvcs} PVC(s)"
+                )
+            else:
+                self.logger.warning(
+                    f"  Child backup '{ns_name}' has hasKubevirtResources=true "
+                    f"but no VM PVCs found in dataSnapshots"
+                )
+        
+        # Final determination: VM workload = true only if scan_locations is not empty
+        is_vm_workload = len(scan_locations) > 0
+        
+        if is_vm_workload:
+            self.logger.info(
+                f"✓ Cluster-backup has VM workloads: {len(scan_locations)} child backup(s) with VMs"
+            )
+        else:
+            self.logger.info(
+                "✓ Cluster-backup has NO VM workloads to scan (all children filtered out)"
+            )
+        
+        return {
+            'instance_id': instance_id,
+            'backupplan_uid': backupplan_uid,
+            'backup_uid': extracted_backup_uid,
+            'is_vm_workload': is_vm_workload,
+            'is_cluster_backup': True,
+            'scan_locations': scan_locations
+        }
+    
+    def _extract_vm_pvc_locations(self, backup_json: Dict) -> Dict[str, list]:
+        """
+        Extract VM PVC information from backup.json dataSnapshots, grouped by VM.
+        
+        LEVEL 2 filtering:
+        - Only processes PVCs owned by VirtualMachine resources
+        - Filters out container PVCs (owned by StatefulSet, Deployment, etc.)
+        - Returns dict mapping VM name to list of PVC paths
+        
+        For now, includes ALL VM PVCs (boot disk + data disks).
+        Future: Will filter to include only boot disks.
+        
+        Args:
+            backup_json: Parsed backup.json dict
+            
+        Returns:
+            Dict mapping VM name to list of PVC paths:
+            {
+                'vm-test': [
+                    'backupplan-uid/backup-uid/custom/data-snapshot/vol-boot',
+                    'backupplan-uid/backup-uid/custom/data-snapshot/vol-data-1',
+                    'backupplan-uid/backup-uid/custom/data-snapshot/vol-data-2'
+                ],
+                'vm-prod': [
+                    'backupplan-uid/backup-uid/custom/data-snapshot/vol-prod-boot'
+                ]
+            }
+        """
+        data_snapshots = (
+            backup_json.get('status', {})
+            .get('snapshot', {})
+            .get('custom', {})
+            .get('dataSnapshots', [])
+        )
+        
+        # Dict to group PVCs by VM name
+        vm_pvc_map = {}
+        
+        for ds in data_snapshots:
+            pvc_name = ds.get('persistentVolumeClaimName')
+            location = ds.get('location')
+            
+            if not location:
+                self.logger.warning(f"    DataSnapshot for PVC '{pvc_name}' has no location, skipping")
+                continue
+            
+            # Check owner
+            owner = ds.get('owner')
+            
+            if not owner:
+                self.logger.debug(
+                    f"    PVC '{pvc_name}' has no owner (standalone container PVC), skipping"
+                )
+                continue
+            
+            # Only process VirtualMachine owners
+            owner_gvk = owner.get('groupVersionKind', {})
+            owner_kind = owner_gvk.get('kind')
+            owner_group = owner_gvk.get('group')
+            
+            if owner_kind != 'VirtualMachine' or owner_group != 'kubevirt.io':
+                self.logger.debug(
+                    f"    PVC '{pvc_name}' is owned by {owner_group}/{owner_kind} (not VM), skipping"
+                )
+                continue
+            
+            # This is a VM-owned PVC
+            vm_name = owner.get('name', '')
+            
+            if not vm_name:
+                self.logger.warning(f"    PVC '{pvc_name}' has VM owner but no name, skipping")
+                continue
+            
+            # Add PVC path to this VM's list
+            if vm_name not in vm_pvc_map:
+                vm_pvc_map[vm_name] = []
+            
+            vm_pvc_map[vm_name].append(location)
+            self.logger.info(f"    Found VM PVC: vm={vm_name}, pvc={pvc_name}")
+        
+        # Log summary
+        for vm_name, pvc_paths in vm_pvc_map.items():
+            self.logger.info(f"    VM '{vm_name}' has {len(pvc_paths)} PVC(s)")
+        
+        return vm_pvc_map
+    
+    def detect_vm_workload(self, backup_path: str) -> bool:
+        """
+        Detect if TVK backup contains VM workload.
+        
+        Reads backup.json and checks status.hasKubevirtResources field.
+        
+        Note: This method is kept for backward compatibility, but it's more
+        efficient to call extract_metadata() which reads backup.json once.
+        
+        Args:
+            backup_path: Full path to backup directory
             
         Returns:
             True if VM workload detected, False otherwise
         """
-        vm_kinds = {
-            'VirtualMachine',
-            'VirtualMachineInstance',
-            'DataVolume',
-            'VirtualMachinePool'
-        }
+        backup_json_path = os.path.join(backup_path, 'backup.json')
         
-        # metadata.json is an array of resource groups
-        if not isinstance(metadata_json, list):
-            self.logger.warning(f"Unexpected metadata.json format: expected list, got {type(metadata_json)}")
+        if not os.path.exists(backup_json_path):
+            self.logger.info("backup.json not found, assuming not a VM workload")
             return False
         
-        # Check each resource group for VM kinds
-        for resource_group in metadata_json:
-            gvk = resource_group.get('groupVersionKind', {})
-            kind = gvk.get('kind', '')
-            group = gvk.get('group', '')
+        try:
+            with open(backup_json_path, 'r') as f:
+                backup_json = json.load(f)
             
-            # Check if this is a KubeVirt VM resource
-            if kind in vm_kinds and group == 'kubevirt.io':
-                self.logger.info(f"Found VM resource: {group}/{kind}")
-                return True
-        
-        self.logger.info("No VM resources found in metadata")
-        return False
-    
-    def _allocate_nbd_device(self) -> Optional[str]:
-        """
-        Find and allocate a free NBD device.
-        
-        Returns:
-            Path to free NBD device (e.g., '/dev/nbd0') or None
-        """
-        for i in range(16):  # Check nbd0 through nbd15
-            device = f'/dev/nbd{i}'
+            # Check status.hasKubevirtResources field
+            has_kubevirt = backup_json.get('status', {}).get('hasKubevirtResources', False)
             
-            # Check if device exists
-            if not os.path.exists(device):
-                continue
+            if has_kubevirt:
+                self.logger.info("VM workload detected: status.hasKubevirtResources is true")
+            else:
+                self.logger.info("Non-VM workload: status.hasKubevirtResources is false or not present")
             
-            # Check if device is in use
-            pid_file = f'/sys/block/nbd{i}/pid'
-            if os.path.exists(pid_file):
-                continue
+            return has_kubevirt
             
-            # Check lock file
-            lock_file = f'/var/lock/qemu-nbd-nbd{i}'
-            if os.path.exists(lock_file):
-                continue
-            
-            return device
-        
-        return None
+        except json.JSONDecodeError as e:
+            self.logger.warning(f"Failed to parse backup.json: {str(e)}")
+            return False
+        except Exception as e:
+            self.logger.warning(f"Error reading backup.json: {str(e)}")
+            return False
 

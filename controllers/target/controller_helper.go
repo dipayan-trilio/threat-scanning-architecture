@@ -397,12 +397,14 @@ func (r *Reconciler) getValidationJob(ctx context.Context, credentialHash string
 func (r *Reconciler) reconcileValidationJob(ctx context.Context, newTarget, originalTarget *v1.Target, newCredHash string,
 	validationJob *batchv1.Job, validationStatus v1.ValidationState) (bool, error) {
 	log := r.Log.WithField("function", "reconcileValidationJob")
-	var deleteJob bool
 	propagationPolicy := metav1.DeletePropagationForeground
 
 	if validationJob == nil || validationStatus == v1.InvalidTargetCredential {
-		if err := r.updateTargetCondition(ctx, newTarget, originalTarget, v1.ValidationOperation, v1.InProgress, ""); err != nil {
-			return false, err
+		// Only add InProgress condition if it doesn't already exist
+		if !newTarget.HasValidationCondition(v1.InProgress) {
+			if err := r.updateTargetCondition(ctx, newTarget, originalTarget, v1.ValidationOperation, v1.InProgress, ""); err != nil {
+				return false, err
+			}
 		}
 
 		// To trigger a new job, delete the old job which is in a failed state
@@ -453,13 +455,17 @@ func (r *Reconciler) reconcileValidationJob(ctx context.Context, newTarget, orig
 			status = v1.Unavailable
 			operationStatus = v1.Failed
 			eventReason = "ValidationFailed"
-			deleteJob = true
+			// Do NOT delete timeout job - keep for debugging (TVK pattern)
+			// deleteJob = true  // Removed: failed/timeout jobs kept for debugging
 			specificReason = "Job pending deadline exceeded"
 		}
 
-		if uErr := r.updateTargetCondition(ctx, newTarget, originalTarget,
-			v1.ValidationOperation, operationStatus, specificReason); uErr != nil {
-			return false, uErr
+		// Only add condition if it doesn't already exist to avoid duplicates
+		if !newTarget.HasValidationCondition(operationStatus) {
+			if uErr := r.updateTargetCondition(ctx, newTarget, originalTarget,
+				v1.ValidationOperation, operationStatus, specificReason); uErr != nil {
+				return false, uErr
+			}
 		}
 	}
 
@@ -469,15 +475,20 @@ func (r *Reconciler) reconcileValidationJob(ctx context.Context, newTarget, orig
 		return false, err
 	}
 
-	// Delete validation job on target goes to available state or if it's pending forever
-	if status == v1.Available || deleteJob {
+	// Delete validation job ONLY when target becomes Available (validation succeeded)
+	// Following TVK pattern: failed/timeout jobs are kept for debugging
+	if status == v1.Available {
 		if dErr := r.Client.Delete(ctx, validationJob, &client.DeleteOptions{PropagationPolicy: &propagationPolicy}); dErr != nil {
 			if !apierrors.IsNotFound(dErr) {
 				return false, dErr
 			}
-			// Job already deleted (likely by TTL), ignore the error
+			// Job already deleted, ignore the error
 			log.Debugf("Validation job %s already deleted", validationJob.Name)
 		}
+		log.Infof("Deleted successful validation job: %s", validationJob.Name)
+	} else if operationStatus == v1.Failed {
+		// Keep failed validation job for debugging
+		log.Infof("Keeping failed validation job for debugging: %s", validationJob.Name)
 	}
 
 	return true, nil
@@ -584,14 +595,30 @@ func (r *Reconciler) processValidationConfigMap(ctx context.Context, targetInsta
 		return false, v1.ValidTargetCredential, nil
 	}
 
-	// For targets with valid credentials, update status to available
-	if uErr := r.updateTargetCondition(ctx, targetInstance, originalTarget, v1.ValidationOperation,
-		v1.InProgress, ""); uErr != nil {
-		return false, validationState, uErr
+	// If validation has already completed, don't add duplicate conditions
+	// This handles controller restart scenarios where validation was already done
+	if targetInstance.IsValidationCompleted() {
+		// Just update status to Available if needed
+		targetInstance.Status.Status = v1.Available
+		if uErr := r.updateTargetStatus(ctx, targetInstance, originalTarget, targetInstance.Status.Status); uErr != nil {
+			return false, validationState, uErr
+		}
+		return false, validationState, nil
 	}
-	if uErr := r.updateTargetCondition(ctx, targetInstance, originalTarget, v1.ValidationOperation,
-		v1.Completed, ""); uErr != nil {
-		return false, validationState, uErr
+
+	// For targets with valid credentials, update status to available
+	// Add validation conditions only if they don't already exist
+	if !targetInstance.HasValidationCondition(v1.InProgress) {
+		if uErr := r.updateTargetCondition(ctx, targetInstance, originalTarget, v1.ValidationOperation,
+			v1.InProgress, ""); uErr != nil {
+			return false, validationState, uErr
+		}
+	}
+	if !targetInstance.HasValidationCondition(v1.Completed) {
+		if uErr := r.updateTargetCondition(ctx, targetInstance, originalTarget, v1.ValidationOperation,
+			v1.Completed, ""); uErr != nil {
+			return false, validationState, uErr
+		}
 	}
 	targetInstance.Status.Status = v1.Available
 	if uErr := r.updateTargetStatus(ctx, targetInstance, originalTarget, targetInstance.Status.Status); uErr != nil {
@@ -726,43 +753,108 @@ func (r *Reconciler) syncValidationConfigMap(ctx context.Context) error {
 func (r *Reconciler) reconcilePollerCronJob(ctx context.Context, target *v1.Target, credentialHash string) error {
 	log := r.Log.WithField("function", "reconcilePollerCronJob")
 
-	// Check if poller cronjob already exists for this credential hash
+	// Get desired CronJob spec
 	cronJobName := helpers.GetTargetResourceName(internal.TargetPollerPrefix, credentialHash)
-	existingCronJob := &batchv1.CronJob{}
-	err := r.Client.Get(ctx, types.NamespacedName{
-		Namespace: internal.GetInstallNamespace(),
-		Name:      cronJobName,
-	}, existingCronJob)
-
-	if err == nil {
-		// CronJob already exists for this credential hash (shared across targets with same creds)
-		log.Debugf("Poller cronjob %s already exists for credential hash %s", cronJobName, credentialHash)
-		return nil
-	}
-
-	if !apierrors.IsNotFound(err) {
-		return fmt.Errorf("error checking for existing cronjob: %w", err)
-	}
-
-	// Create new poller cronjob
-	cronJob, err := helpers.GetTargetPollerCronJob(ctx, r.Client, target, credentialHash)
+	desiredCronJob, err := helpers.GetTargetPollerCronJob(ctx, r.Client, target, credentialHash)
 	if err != nil {
 		return fmt.Errorf("error creating poller cronjob spec: %w", err)
 	}
 
-	// Note: No owner reference - cronjob is shared across targets with same credentials
-	// Manual cleanup is handled in cleanupResourcesForTargetHash()
+	// Check if CronJob already exists
+	existingCronJob := &batchv1.CronJob{}
+	err = r.Client.Get(ctx, types.NamespacedName{
+		Namespace: internal.GetInstallNamespace(),
+		Name:      cronJobName,
+	}, existingCronJob)
 
-	log.Infof("Creating poller cronjob: %s for credential hash: %s", cronJob.Name, credentialHash)
-	if err := r.Client.Create(ctx, cronJob); err != nil {
-		r.Recorder.Eventf(target, corev1.EventTypeWarning, "CronJobCreateFailed",
-			"Poller cronjob creation failed for target: %s", target.Name)
-		return fmt.Errorf("error creating poller cronjob: %w", err)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("error checking for existing cronjob: %w", err)
+		}
+
+		// CronJob doesn't exist, create it
+		log.Infof("Creating poller cronjob: %s for credential hash: %s", desiredCronJob.Name, credentialHash)
+		if err := r.Client.Create(ctx, desiredCronJob); err != nil {
+			r.Recorder.Eventf(target, corev1.EventTypeWarning, "CronJobCreateFailed",
+				"Poller cronjob creation failed for target: %s", target.Name)
+			return fmt.Errorf("error creating poller cronjob: %w", err)
+		}
+
+		r.Recorder.Eventf(target, corev1.EventTypeNormal, "CronJobCreateSuccess",
+			"Poller cronjob %s created for credential hash: %s", desiredCronJob.Name, credentialHash)
+
+		log.Infof("Successfully created poller cronjob: %s", desiredCronJob.Name)
+		return nil
 	}
 
-	r.Recorder.Eventf(target, corev1.EventTypeNormal, "CronJobCreateSuccess",
-		"Poller cronjob %s created for credential hash: %s", cronJob.Name, credentialHash)
+	// CronJob exists, check if update is needed
+	needsUpdate := false
+	updateReason := ""
 
-	log.Infof("Successfully created poller cronjob: %s", cronJob.Name)
+	// Compare schedule
+	if existingCronJob.Spec.Schedule != desiredCronJob.Spec.Schedule {
+		needsUpdate = true
+		updateReason = fmt.Sprintf("schedule changed from %s to %s", existingCronJob.Spec.Schedule, desiredCronJob.Spec.Schedule)
+	}
+
+	// Compare image
+	if len(existingCronJob.Spec.JobTemplate.Spec.Template.Spec.Containers) > 0 &&
+		len(desiredCronJob.Spec.JobTemplate.Spec.Template.Spec.Containers) > 0 {
+		existingImage := existingCronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Image
+		desiredImage := desiredCronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Image
+		if existingImage != desiredImage {
+			needsUpdate = true
+			updateReason = fmt.Sprintf("image changed from %s to %s", existingImage, desiredImage)
+		}
+	}
+
+	// Compare command and args
+	if len(existingCronJob.Spec.JobTemplate.Spec.Template.Spec.Containers) > 0 &&
+		len(desiredCronJob.Spec.JobTemplate.Spec.Template.Spec.Containers) > 0 {
+		existingArgs := existingCronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Args
+		desiredArgs := desiredCronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Args
+		if len(existingArgs) != len(desiredArgs) {
+			needsUpdate = true
+			if updateReason != "" {
+				updateReason += "; "
+			}
+			updateReason += "command args changed"
+		} else {
+			for i := range existingArgs {
+				if existingArgs[i] != desiredArgs[i] {
+					needsUpdate = true
+					if updateReason != "" {
+						updateReason += "; "
+					}
+					updateReason += "command args changed"
+					break
+				}
+			}
+		}
+	}
+
+	if !needsUpdate {
+		log.Debugf("Poller cronjob %s is up to date", cronJobName)
+		return nil
+	}
+
+	// Update CronJob
+	log.Infof("Updating poller cronjob %s: %s", cronJobName, updateReason)
+
+	// Preserve metadata (resourceVersion, etc.)
+	desiredCronJob.ResourceVersion = existingCronJob.ResourceVersion
+	desiredCronJob.UID = existingCronJob.UID
+	desiredCronJob.Generation = existingCronJob.Generation
+
+	if err := r.Client.Update(ctx, desiredCronJob); err != nil {
+		r.Recorder.Eventf(target, corev1.EventTypeWarning, "CronJobUpdateFailed",
+			"Poller cronjob update failed for target: %s", target.Name)
+		return fmt.Errorf("error updating poller cronjob: %w", err)
+	}
+
+	r.Recorder.Eventf(target, corev1.EventTypeNormal, "CronJobUpdateSuccess",
+		"Poller cronjob %s updated: %s", cronJobName, updateReason)
+
+	log.Infof("Successfully updated poller cronjob: %s", cronJobName)
 	return nil
 }

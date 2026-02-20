@@ -56,10 +56,14 @@ class HandlerFactory:
         
         if backup_type == 'TVK':
             logger_instance.info("Using TVK handler")
-            return TVKTargetHandler(target_cr, k8s_client, logger_instance)
+            handler = TVKTargetHandler(target_cr, k8s_client, logger_instance)
+            handler.backup_type_detected = True  # Mark as already detected
+            return handler
         elif backup_type == 'TVO':
             logger_instance.info("Using TVO handler")
-            return TVOTargetHandler(target_cr, k8s_client, logger_instance)
+            handler = TVOTargetHandler(target_cr, k8s_client, logger_instance)
+            handler.backup_type_detected = True  # Mark as already detected
+            return handler
         else:
             # Unknown backup type
             raise RuntimeError(

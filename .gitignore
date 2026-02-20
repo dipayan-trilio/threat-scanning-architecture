@@ -32,3 +32,4 @@ cover.out
 
 **/venv
 **/.venv
+test_ignore/

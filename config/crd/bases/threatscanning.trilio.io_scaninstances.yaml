@@ -11,6 +11,8 @@ spec:
     kind: ScanInstance
     listKind: ScanInstanceList
     plural: scaninstances
+    shortNames:
+    - si
     singular: scaninstance
   scope: Cluster
   versions:
@@ -140,6 +142,59 @@ spec:
               report:
                 description: Report is the path to the scan report
                 type: string
+              scanLocations:
+                description: |-
+                  ScanLocations contains the list of backup locations to scan with their VM PVC paths
+                  For single namespace backup: One entry with empty Namespace field
+                  For cluster-backup: Multiple entries (one per child backup that has VMs)
+                  If this list is empty, no VM workloads need scanning
+                items:
+                  description: ScanLocation represents a backup location with VMs
+                    to scan
+                  properties:
+                    backupPath:
+                      description: BackupPath is the relative path to the backup directory
+                      type: string
+                    backupUID:
+                      description: BackupUID is the UID of the backup
+                      type: string
+                    namespace:
+                      description: |-
+                        Namespace is the namespace of the backup
+                        Empty for single namespace backups (non-cluster)
+                      type: string
+                    vms:
+                      description: |-
+                        VMs contains the list of VMs with their PVC paths that need scanning
+                        Each VM entry groups all PVCs belonging to that VM
+                        For now, includes all VM PVCs (boot + data disks)
+                        Future: Will be filtered to include only boot disks
+                      items:
+                        description: VMInfo contains information about a VM and its
+                          PVCs that need scanning
+                        properties:
+                          pvcPaths:
+                            description: |-
+                              PVCPaths contains the list of PVC paths for this VM
+                              For now, includes all VM PVCs (boot disk + data disks)
+                              Future: Will be filtered to include only the boot disk
+                            items:
+                              type: string
+                            type: array
+                          vmName:
+                            description: VMName is the name of the VirtualMachine
+                            type: string
+                        required:
+                        - pvcPaths
+                        - vmName
+                        type: object
+                      type: array
+                  required:
+                  - backupPath
+                  - backupUID
+                  - vms
+                  type: object
+                type: array
               status:
                 allOf:
                 - enum:
