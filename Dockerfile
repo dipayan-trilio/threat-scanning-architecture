@@ -1,4 +1,4 @@
-# Build the manager binary
+# Build the manager and janitor binaries
 FROM golang:1.21 as builder
 ARG TARGETOS
 ARG TARGETARCH
@@ -19,19 +19,24 @@ COPY internal/ internal/
 COPY pkg/ pkg/
 COPY hack/boilerplate.go.txt hack/boilerplate.go.txt
 
-# Build
-# the GOARCH has not a default value to allow the binary be built according to the host where the command
-# was called. For example, if we call make docker-build in a local env which has the Apple Silicon M1 SO
-# the docker BUILDPLATFORM arg will be linux/arm64 when for Apple x86 it will be linux/amd64. Therefore,
-# by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
+# Build manager
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/manager/main.go
 
-# Use distroless as minimal base image to package the manager binary
-# Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static:nonroot
+# Build janitor
+# RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o janitor cmd/janitor/main.go
+
+# Use alpine as minimal base image to package the binaries
+FROM alpine:3.19
 WORKDIR /
 COPY --from=builder /workspace/manager .
-USER 65532:65532
+# COPY --from=builder /workspace/janitor .
+
+# Add ca-certificates for HTTPS connections
+RUN apk --no-cache add ca-certificates
+
+# Create non-root user
+RUN addgroup -g 65532 -S nonroot && adduser -u 65532 -S nonroot -G nonroot
+USER nonroot:nonroot
 
 # The manager binary supports the following flags:
 # --enable-webhook: Enable the validating webhook server (default: false)
@@ -39,4 +44,3 @@ USER 65532:65532
 # --webhook-cert-dir: Directory containing TLS certificates (default: /tmp/k8s-webhook-server/serving-certs)
 # --enable-leader-election: Enable leader election for controller manager (default: false)
 ENTRYPOINT ["/manager"]
-

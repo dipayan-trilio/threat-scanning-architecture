@@ -108,10 +108,12 @@ spec:
                       - enum:
                         - Queued
                         - PreScan
+                        - RedisDeployment
                         - Scanning
                       - enum:
                         - Queued
                         - PreScan
+                        - RedisDeployment
                         - Scanning
                       description: Phase defines the current phase of the scan.
                       type: string
@@ -127,10 +129,12 @@ spec:
                         - Unavailable
                         - Completed
                         - Failed
+                        - Ready
                       - enum:
                         - InProgress
                         - Completed
                         - Failed
+                        - Ready
                       description: Status is the status of the condition.
                       type: string
                     timestamp:

@@ -1,6 +1,9 @@
+---
+# Kustomization for webhook resources
 resources:
-  - manifests.yaml
+- validating_webhook_configuration.yaml
+- mutating_webhook_configuration.yaml
+- service.yaml
 
 configurations:
-  - kustomizeconfig.yaml
-
+- kustomizeconfig.yaml

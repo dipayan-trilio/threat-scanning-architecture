@@ -1,5 +1,9 @@
 """
-TVK backup type detector.
+TVK backup metadata extractor.
+
+Extracts metadata from TrilioVault for Kubernetes backups.
+Target type (TVK/TVO) is now specified via command-line argument.
+VM workload detection is still performed on a per-backup basis.
 """
 
 import os
@@ -14,9 +18,11 @@ from mount_utility import constants
 
 class TVKBackupDetector(BaseBackupDetector):
     """
-    Detector for TrilioVault for Kubernetes backups.
+    Metadata extractor for TrilioVault for Kubernetes backups.
     
-    Looks for tvk-meta.json (NFS) or tvk-meta.json.manifest.<hex> (S3).
+    Reads tvk-meta.json and backup metadata files to extract backup information.
+    Note: Target type detection (TVK vs TVO) has been removed - now specified via CLI argument.
+    VM workload detection per backup is still performed.
     """
     
     def detect(self, mount_path: Optional[str] = None) -> str:

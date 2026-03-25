@@ -1,0 +1,39 @@
+# Build the janitor binary
+FROM golang:1.21 as builder
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /workspace
+# Copy the Go Modules manifests
+COPY go.mod go.mod
+COPY go.sum go.sum
+# cache deps before building and copying source so that we don't need to re-download as much
+# and so that source changes don't invalidate our downloaded layer
+RUN go mod download
+
+# Copy the go source
+COPY cmd/janitor/ cmd/janitor/
+COPY api/ api/
+COPY internal/ internal/
+COPY pkg/ pkg/
+
+# Build janitor
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o janitor cmd/janitor/main.go
+
+# Use alpine as minimal base image to package the janitor binary
+FROM alpine:3.19
+WORKDIR /app
+COPY --from=builder /workspace/janitor /app/
+
+# Add ca-certificates for HTTPS connections
+RUN apk --no-cache add ca-certificates
+
+# Create non-root user
+RUN addgroup -g 65532 -S nonroot && adduser -u 65532 -S nonroot -G nonroot
+USER nonroot:nonroot
+
+# The janitor binary supports the following flags:
+# --scan-instance: Name of the ScanInstance to cleanup (optional)
+# --status: Status filter for cleanup: 'Failed' or 'Available' (default: Failed)
+# --dry-run: Dry run mode - only log what would be deleted
+ENTRYPOINT ["/janitor"]

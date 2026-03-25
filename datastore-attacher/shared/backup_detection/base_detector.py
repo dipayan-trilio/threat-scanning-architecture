@@ -1,5 +1,9 @@
 """
 Base backup type detector interface.
+
+Provides common utilities and abstract methods for metadata extraction.
+Target type (TVK/TVO) is now specified via command-line argument instead of auto-detection.
+VM workload detection is still performed on a per-backup basis.
 """
 
 from abc import ABC, abstractmethod
@@ -12,9 +16,9 @@ from mount_utility import constants
 
 class BaseBackupDetector(ABC):
     """
-    Abstract base class for backup type detection.
+    Abstract base class for backup metadata extraction.
     
-    Provides common utilities for both NFS and S3 detection.
+    Provides common utilities for both NFS and S3 operations.
     """
     
     def __init__(self, parsed_target: Dict, target_type: str, logger):
@@ -29,19 +33,6 @@ class BaseBackupDetector(ABC):
         self.parsed_target = parsed_target
         self.target_type = target_type
         self.logger = logger
-    
-    @abstractmethod
-    def detect(self, mount_path: Optional[str] = None) -> str:
-        """
-        Detect if this is the specific backup type.
-        
-        Args:
-            mount_path: Path where target is mounted (for NFS)
-            
-        Returns:
-            Backup type string ('TVK', 'TVO') or 'UNKNOWN'
-        """
-        pass
     
     @abstractmethod
     def detect_vm_workload(self, backup_path: str) -> bool:

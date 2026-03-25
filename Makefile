@@ -1,6 +1,7 @@
 # Image URL to use all building/pushing image targets
 IMG ?= threat-scanning-controller:latest
 WEBHOOK_IMG ?= eu.gcr.io/amazing-chalice-243510/threat-scanning-webhook:latest
+JANITOR_IMG ?= threat-scan-janitor:latest
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -50,13 +51,31 @@ test: manifests generate fmt vet ## Run tests.
 build: generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/manager/main.go
 
+.PHONY: build-janitor
+build-janitor: generate fmt vet ## Build janitor binary.
+	go build -o bin/janitor cmd/janitor/main.go
+
+.PHONY: build-all
+build-all: build build-janitor ## Build all binaries (manager and janitor).
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/manager/main.go
 
+.PHONY: run-janitor
+run-janitor: manifests generate fmt vet ## Run janitor from your host.
+	go run ./cmd/janitor/main.go
+
 .PHONY: docker-build
 docker-build: test ## Build docker image with the manager.
 	docker build -t ${IMG} .
+
+.PHONY: docker-build-janitor
+docker-build-janitor: test ## Build docker image with the janitor.
+	docker build -t ${JANITOR_IMG} -f Dockerfile.janitor .
+
+.PHONY: docker-build-all
+docker-build-all: docker-build docker-build-janitor ## Build all docker images.
 
 .PHONY: docker-buildx
 docker-buildx: test ## Build and push docker image for the manager for cross-platform support
@@ -71,6 +90,13 @@ docker-buildx: test ## Build and push docker image for the manager for cross-pla
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
 	docker push ${IMG}
+
+.PHONY: docker-push-janitor
+docker-push-janitor: ## Push docker image with the janitor.
+	docker push ${JANITOR_IMG}
+
+.PHONY: docker-push-all
+docker-push-all: docker-push docker-push-janitor ## Push all docker images.
 
 ##@ Webhook
 

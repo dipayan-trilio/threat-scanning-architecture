@@ -115,6 +115,7 @@ def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Target Poller for threat scanning')
     parser.add_argument('--target-name', required=True, help='Name of the BackupTarget CR')
+    parser.add_argument('--target-type', required=True, choices=['TVK', 'TVO'], help='Backup type (TVK or TVO)')
     parser.add_argument('--group', default='threatscanning.trilio.io', help='API group')
     parser.add_argument('--version', default='v1', help='API version')
     
@@ -122,6 +123,7 @@ def main():
     
     logging.info("TARGET POLLER - Starting")
     logging.info(f"Target: {args.target_name}")
+    logging.info(f"Target Type: {args.target_type}")
     
     try:
         # Initialize Kubernetes client
@@ -137,13 +139,14 @@ def main():
         # Get BackupTarget
         backup_target = get_backup_target(k8s_client, args.target_name)
         
-        # Create handler using factory
+        # Create handler using factory with backup type from args
         logging.info("")
         logging.info("Creating handler...")
         handler = HandlerFactory.create_handler(
             target_cr=backup_target,
             k8s_client=k8s_client,
-            logger_instance=logging
+            logger_instance=logging,
+            target_type=args.target_type
         )
         logging.info("✓ Handler created")
         

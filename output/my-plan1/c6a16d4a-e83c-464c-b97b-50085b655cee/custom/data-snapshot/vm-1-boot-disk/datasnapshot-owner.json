@@ -1,0 +1,8 @@
+{
+  "groupVersionKind": {
+    "group": "kubevirt.io",
+    "version": "v1",
+    "kind": "VirtualMachine"
+  },
+  "name": "vm-1"
+}

@@ -18,6 +18,9 @@ spec:
     - jsonPath: .spec.type
       name: Type
       type: string
+    - jsonPath: .spec.targetType
+      name: TargetType
+      type: string
     - jsonPath: .spec.vendor
       name: Vendor
       type: string
@@ -184,6 +187,14 @@ spec:
                 required:
                 - bucketName
                 type: object
+              targetType:
+                description: |-
+                  TargetType is the backup product type (TVK or TVO).
+                  Required for backup targets, not applicable for reporting targets.
+                enum:
+                - TVK
+                - TVO
+                type: string
               thresholdCapacity:
                 anyOf:
                 - type: integer
@@ -252,6 +263,7 @@ spec:
                         - Unavailable
                         - Completed
                         - Failed
+                        - Ready
                       - enum:
                         - InProgress
                         - Error
@@ -361,6 +373,7 @@ spec:
                   - Unavailable
                   - Completed
                   - Failed
+                  - Ready
                 - enum:
                   - InProgress
                   - Available

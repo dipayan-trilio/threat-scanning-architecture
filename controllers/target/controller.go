@@ -402,15 +402,35 @@ func (r *Reconciler) cronjobHandler(ctx context.Context, obj client.Object) []re
 		return nil
 	}
 
-	// Get target name from cronjob label
-	targetName, exists := obj.GetLabels()[internal.TargetNameAnnotationKey]
+	// Get credential hash from cronjob annotation/label
+	// CronJob uses credential hash in both labels and annotations
+	credHash, exists := obj.GetAnnotations()[internal.TargetCredentialsHashAnnotationKey]
 	if !exists {
+		// Fall back to labels for backward compatibility
+		credHash, exists = obj.GetLabels()[internal.TargetCredentialsHashAnnotationKey]
+		if !exists {
+			return nil
+		}
+	}
+
+	// Find all targets with this credential hash
+	targets := &v1.TargetList{}
+	if err := r.Client.List(ctx, targets); err != nil {
+		r.Log.Error(err, "error listing targets")
 		return nil
 	}
 
-	return []reconcile.Request{
-		{NamespacedName: types.NamespacedName{Name: targetName}},
+	var requests []reconcile.Request
+	for i := range targets.Items {
+		targetHash, exists := targets.Items[i].Annotations[internal.TargetCredentialsHashAnnotationKey]
+		if exists && targetHash == credHash {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: targets.Items[i].Name},
+			})
+		}
 	}
+
+	return requests
 }
 
 // isTargetTypeChanged checks if the target type has changed

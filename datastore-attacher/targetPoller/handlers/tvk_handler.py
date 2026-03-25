@@ -1,7 +1,7 @@
 """
 TVK (TrilioVault for Kubernetes) handler for targetPoller.
 
-Implements TVK-specific logic for storage state population and backup detection.
+Implements TVK-specific logic for storage state population.
 """
 
 import os
@@ -16,7 +16,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 
 from .base_handler import BaseTargetHandler, TRILIODATA_MOUNT_PATH, IGNORE_RECENT_UPDATES_MINUTES
 from targetPoller.models.storage_state import StorageState, BackupObject, BackupType
-from shared.backup_detection import TVKBackupDetector
 
 from mount_utility import constants
 
@@ -41,31 +40,6 @@ class TVKTargetHandler(BaseTargetHandler):
         super().__init__(target_cr, k8s_client, logger_instance)
         self.backup_type = 'TVK'
         self.is_mounted = False
-        # Initialize shared detector
-        self.detector = TVKBackupDetector(self.parsed_target, self.target_type, self.logger)
-    
-    def detect_backup_type(self) -> str:
-        """
-        Detect if this is a TVK backup target.
-        
-        Uses shared TVKBackupDetector for detection logic.
-        
-        Returns:
-            'TVK' if TVK markers found, 'UNKNOWN' otherwise
-        """
-        self.logger.info("Detecting backup type...")
-        print(f"Target type: {self.target_type}")
-        
-        # For NFS, mount first if not already mounted
-        mount_path = None
-        if self.target_type != constants.OBJECT_STORE:
-            if not self.is_mounted:
-                mount_path = self._mount_target()
-            else:
-                mount_path = TRILIODATA_MOUNT_PATH
-        
-        # Use shared detector
-        return self.detector.detect(mount_path)
     
     def populate_storage_state(self) -> StorageState:
         """
@@ -220,10 +194,25 @@ class TVKTargetHandler(BaseTargetHandler):
         
         Note: NFS uses plain JSON files (backup.json, cluster-backup.json, etc.)
         No manifest files or segment directories - those are S3/s3fuse specific.
+        
+        For NFS targets, the controller mounts the target via PVC volume at /triliodata.
+        No need to mount again - just verify the mount point exists.
         """
-        # Ensure target is mounted
-        if not self.is_mounted:
-            self._mount_target()
+        # Check if /triliodata is accessible (should be mounted via PVC by controller)
+        if not os.path.exists(TRILIODATA_MOUNT_PATH):
+            raise RuntimeError(
+                f"NFS target mount point {TRILIODATA_MOUNT_PATH} not found. "
+                f"This should be mounted via PVC by the controller."
+            )
+        
+        if not os.path.ismount(TRILIODATA_MOUNT_PATH):
+            self.logger.warning(
+                f"{TRILIODATA_MOUNT_PATH} exists but is not a mount point. "
+                f"This is expected when PVC volume is mounted."
+            )
+        
+        self.logger.info(f"Using NFS target at {TRILIODATA_MOUNT_PATH} (mounted via PVC)")
+        self.is_mounted = True
         
         cutoff_time = datetime.utcnow() - timedelta(minutes=IGNORE_RECENT_UPDATES_MINUTES)
         
@@ -390,52 +379,4 @@ class TVKTargetHandler(BaseTargetHandler):
                 f"Failed to read scanConfig from {backupplan_file} for {backupplan_uid}: {str(e)}"
             )
             return None
-    
-    def _mount_target(self) -> str:
-        """
-        Mount NFS target to /triliodata.
-        
-        Returns:
-            Mount path
-        """
-        if self.is_mounted:
-            return TRILIODATA_MOUNT_PATH
-        
-        self.logger.info(f"Mounting NFS target {self.target_name} to {TRILIODATA_MOUNT_PATH}")
-        
-        # Get absolute path to mount_datastores.py
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        mount_script = os.path.abspath(os.path.join(
-            current_dir,
-            '../../mount_utility/mount_by_target_crd/mount_datastores.py'
-        ))
-        
-        mount_cmd = [
-            'python3',
-            mount_script,
-            f'--target-name={self.target_name}',
-            '--group=threatscanning.trilio.io'
-        ]
-        
-        try:
-            subprocess.run(
-                mount_cmd,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
-            self.logger.info(f"✓ Successfully mounted {self.target_name} at {TRILIODATA_MOUNT_PATH}")
-            self.is_mounted = True
-            return TRILIODATA_MOUNT_PATH
-            
-        except subprocess.CalledProcessError as e:
-            error_msg = f"Failed to mount NFS target {self.target_name}: {e.stderr}"
-            self.logger.error(error_msg)
-            raise RuntimeError(error_msg)
-        except subprocess.TimeoutExpired:
-            error_msg = f"Mount command timed out for {self.target_name}"
-            self.logger.error(error_msg)
-            raise RuntimeError(error_msg)
-
 

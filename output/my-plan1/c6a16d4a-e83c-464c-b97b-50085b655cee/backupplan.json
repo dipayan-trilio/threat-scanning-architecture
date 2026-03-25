@@ -1,0 +1,25 @@
+{
+  "apiVersion": "triliovault.trilio.io/v1",
+  "kind": "BackupPlan",
+  "metadata": {
+    "name": "my-plan1",
+    "namespace": "default",
+    "uid": "7f076def-5537-43c8-ba6c-b813e925afcd",
+    "creationTimestamp": "2026-03-19T07:29:38.743516Z"
+  },
+  "spec": {
+    "backupConfig": {
+      "target": {
+        "name": "mock-target",
+        "namespace": "default"
+      }
+    },
+    "scanConfig": {
+      "enabled": true,
+      "scanOldBackups": false
+    }
+  },
+  "status": {
+    "status": "Available"
+  }
+}

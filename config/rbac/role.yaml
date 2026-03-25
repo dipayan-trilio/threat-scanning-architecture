@@ -10,6 +10,7 @@ rules:
   - configmaps
   - persistentvolumeclaims
   - persistentvolumes
+  - services
   verbs:
   - create
   - delete
@@ -32,6 +33,18 @@ rules:
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - batch

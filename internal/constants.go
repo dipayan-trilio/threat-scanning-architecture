@@ -39,6 +39,15 @@ const (
 	// ScanInstanceScanConfigPrefix is the prefix for scan config configmap
 	ScanInstanceScanConfigPrefix = "scan-config"
 
+	// ScanInstanceRedisDeployPrefix is the prefix for redis deployment
+	ScanInstanceRedisDeployPrefix = "redis-deploy"
+
+	// ScanInstanceRedisServicePrefix is the prefix for redis service
+	ScanInstanceRedisServicePrefix = "redis-svc"
+
+	// ScanInstanceJanitorJobPrefix is the prefix for janitor job resources
+	ScanInstanceJanitorJobPrefix = "threat-scan-janitor"
+
 	// ScanInstanceNameLabel is the label key for scan instance name
 	ScanInstanceNameLabel = "trilio.io/scaninstance-name"
 
@@ -102,8 +111,11 @@ const (
 	// PendingDeadlineSeconds is the default pending deadline
 	PendingDeadlineSeconds = int64(300)
 
-	// JobBackoffLimit is the backoff limit for jobs
+	// JobBackoffLimit is the backoff limit for jobs (0 = no retries for validation/poller)
 	JobBackoffLimit = int32(0)
+
+	// ScanJobBackoffLimit is the backoff limit for scan jobs (3 retries before failure)
+	ScanJobBackoffLimit = int32(3)
 
 	// JobTTLSecondsAfterFinished is the TTL for jobs after finished
 	JobTTLSecondsAfterFinished = int32(300)
@@ -117,6 +129,21 @@ const (
 	// RelatedImageScanner is the environment variable name for scanner image
 	RelatedImageScanner = "RELATED_IMAGE_SCANNER"
 
+	// RelatedImageRedis is the environment variable name for redis image
+	RelatedImageRedis = "RELATED_IMAGE_REDIS"
+
+	// RelatedImageJanitor is the environment variable name for janitor image
+	RelatedImageJanitor = "RELATED_IMAGE_JANITOR"
+
+	// DatabaseURL is the environment variable name for database URL
+	DatabaseURL = "DATABASE_URL"
+
+	// TargetPollingCron is the environment variable name for target polling cron schedule
+	TargetPollingCron = "TARGET_POLLING_CRON"
+
+	// TargetPollingDisabled is the environment variable name to disable target polling
+	TargetPollingDisabled = "TARGET_POLLING_DISABLED"
+
 	// DefaultValidatorImage is the default validator image if env var not set
 	DefaultValidatorImage = "gcr.io/amazing-chalice-243510/threatscanning/datastore-attacher:latest"
 
@@ -125,6 +152,15 @@ const (
 
 	// DefaultScannerImage is the default scanner image if env var not set
 	DefaultScannerImage = "threat-scan-scanner:latest"
+
+	// DefaultRedisImage is the default redis image if env var not set
+	DefaultRedisImage = "redis:7-alpine"
+
+	// DefaultJanitorImage is the default janitor image if env var not set
+	DefaultJanitorImage = "threat-scan-janitor:latest"
+
+	// DefaultDatabaseURL is the default database URL if env var not set (SQLite)
+	DefaultDatabaseURL = "sqlite+aiosqlite:///./scan_analysis.db"
 
 	// DefaultPollerSchedule is the default cron schedule for poller (every 6 hours)
 	DefaultPollerSchedule = "0 */6 * * *"
@@ -138,6 +174,11 @@ const (
 	DatastoreValidatorUtil           = "datastore-attacher/scripts/target_validations.py"
 	DatastoreMountUtil               = "datastore-attacher/mount_utility/mount_by_target_crd/mount_datastores.py"
 	DatastoreAttacherPathInContainer = "/opt/threat-scanning/datastore-attacher"
+
+	// DefaultDatastoreBase is the default mount path for datastores (NFS, ObjectStore)
+	// This path is used consistently across validation, polling, prescan, and scan jobs
+	// Matches k8s-triliovault's DefaultDatastoreBase constant
+	DefaultDatastoreBase = "/triliodata"
 )
 
 // GetInstallNamespace returns the installation namespace from environment variable or default
@@ -146,6 +187,92 @@ func GetInstallNamespace() string {
 		return ns
 	}
 	return DefaultInstallNamespace
+}
+
+// GetRedisImage returns the Redis image from environment variable or default
+func GetRedisImage() string {
+	if img := os.Getenv(RelatedImageRedis); img != "" {
+		return img
+	}
+	return DefaultRedisImage
+}
+
+// GetJanitorImage returns the Janitor image from environment variable or default
+func GetJanitorImage() string {
+	if img := os.Getenv(RelatedImageJanitor); img != "" {
+		return img
+	}
+	return DefaultJanitorImage
+}
+
+// GetDatabaseURL returns the database URL from environment variable or default
+func GetDatabaseURL() string {
+	if url := os.Getenv(DatabaseURL); url != "" {
+		return url
+	}
+	return DefaultDatabaseURL
+}
+
+// GetTargetPollingCron returns the target polling cron schedule from environment variable or default
+// Validates the cron expression and returns default if invalid
+func GetTargetPollingCron(logger interface {
+	Warnf(format string, args ...interface{})
+}) string {
+	cronExpr := os.Getenv(TargetPollingCron)
+	if cronExpr == "" {
+		return DefaultPollerSchedule
+	}
+
+	// Validate cron expression (basic validation for 5-field cron)
+	if !isValidCronExpression(cronExpr) {
+		if logger != nil {
+			logger.Warnf("Invalid cron expression in %s: '%s'. Using default: %s",
+				TargetPollingCron, cronExpr, DefaultPollerSchedule)
+		}
+		return DefaultPollerSchedule
+	}
+
+	return cronExpr
+}
+
+// isValidCronExpression performs basic validation of cron expression
+// Validates 5-field cron format: minute hour day month weekday
+func isValidCronExpression(expr string) bool {
+	// Basic validation: check if it has 5 fields
+	fields := splitCronFields(expr)
+	if len(fields) != 5 {
+		return false
+	}
+
+	// Additional validation can be added here
+	// For now, we trust Kubernetes CronJob validation
+	return true
+}
+
+// splitCronFields splits cron expression into fields, handling multiple spaces
+func splitCronFields(expr string) []string {
+	var fields []string
+	currentField := ""
+	for _, char := range expr {
+		if char == ' ' || char == '\t' {
+			if currentField != "" {
+				fields = append(fields, currentField)
+				currentField = ""
+			}
+		} else {
+			currentField += string(char)
+		}
+	}
+	if currentField != "" {
+		fields = append(fields, currentField)
+	}
+	return fields
+}
+
+// IsTargetPollingDisabled returns true if target polling is disabled via environment variable
+func IsTargetPollingDisabled() bool {
+	disabled := os.Getenv(TargetPollingDisabled)
+	return disabled == "true" || disabled == "True" || disabled == "TRUE" || disabled == "1"
 }
 
 // GetRecommendedLabels returns the recommended labels

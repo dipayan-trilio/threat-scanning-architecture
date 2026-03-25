@@ -2,8 +2,9 @@
 """
 Prescan CLI for threat scanning service.
 
-Validates backup path, detects backup type, checks for VM workloads,
+Validates backup path, extracts metadata, checks for VM workloads,
 and updates ScanInstance CR with appropriate labels and annotations.
+Backup type is provided via --backup-type argument from the controller.
 
 Note: Target mounting is handled by the controller before running this CLI.
 """
@@ -16,7 +17,6 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from mount_utility import logger
-from shared.backup_detection import detect_backup_type
 from shared.backup_detection.tvk_detector import TVKBackupDetector
 from shared.backup_detection.tvo_detector import TVOBackupDetector
 from shared.k8s.client import K8sClient
@@ -35,6 +35,7 @@ def main():
     parser.add_argument('--backup-path', required=True, help='Relative path to backup directory')
     parser.add_argument('--backup-uid', required=True, help='Backup UID')
     parser.add_argument('--scaninstance-name', required=True, help='Name of ScanInstance CR')
+    parser.add_argument('--target-type', required=True, choices=['TVK', 'TVO'], help='Target type (TVK or TVO)')
     
     args = parser.parse_args()
     
@@ -59,17 +60,21 @@ def main():
         if not target_cr:
             raise RuntimeError(f"Target {args.target_name} not found")
         
-        # Step 3: Detect backup type (TVK/TVO)
+        # Step 3: Get appropriate detector based on target type from args
+        target_type = args.target_type
+        logging.info(f"Using target type from args: {target_type}")
+        
         from mount_utility.mount_by_target_crd import triliodata_crd_parser
         parsed_target = triliodata_crd_parser.parse_cr_response(target_cr)
-        target_type = parsed_target.get('storageType', '').lower()
+        storage_type = parsed_target.get('storageType', '').lower()
         
-        backup_type, detector = detect_backup_type(
-            parsed_target, target_type, logging, TRILIODATA_MOUNT_PATH
-        )
-        
-        if backup_type == 'UNKNOWN':
-            raise RuntimeError("Could not determine backup type (TVK/TVO)")
+        # Create detector based on target type
+        if target_type == 'TVK':
+            detector = TVKBackupDetector(parsed_target, storage_type, logging)
+        elif target_type == 'TVO':
+            detector = TVOBackupDetector(parsed_target, storage_type, logging)
+        else:
+            raise RuntimeError(f"Unsupported target type: {target_type}")
         
         # Step 4: Extract metadata (includes two-level VM workload detection)
         # This reads tvk-meta.json, backup.json/cluster-backup.json and child backups
@@ -132,7 +137,7 @@ def main():
         
         # Prepare status update
         status = {
-            'type': backup_type,
+            'type': target_type,
             'scanLocations': scan_locations_camel
         }
         

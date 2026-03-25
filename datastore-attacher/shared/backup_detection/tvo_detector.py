@@ -1,5 +1,9 @@
 """
-TVO backup type detector.
+TVO backup metadata extractor.
+
+Stub implementation - TVO support will be added later.
+Target type (TVK/TVO) is now specified via command-line argument.
+VM workload detection would be performed on a per-backup basis (not yet implemented).
 """
 
 from typing import Optional, Dict
@@ -9,22 +13,11 @@ from .base_detector import BaseBackupDetector
 
 class TVOBackupDetector(BaseBackupDetector):
     """
-    Detector for TrilioVault for OpenStack backups.
+    Metadata extractor for TrilioVault for OpenStack backups.
     
-    NOTE: TVO detection is not yet implemented.
+    NOTE: TVO metadata extraction is not yet implemented.
+    Note: Target type detection (TVK vs TVO) has been removed - now specified via CLI argument.
     """
-    
-    def detect(self, mount_path: Optional[str] = None) -> str:
-        """
-        Detect if this is a TVO backup target.
-        
-        NOTE: Not yet implemented.
-        
-        Returns:
-            'UNKNOWN' - TVO detection not implemented
-        """
-        self.logger.warning("TVO detection is not yet implemented")
-        return 'UNKNOWN'
     
     def detect_vm_workload(self, backup_path: str) -> bool:
         """

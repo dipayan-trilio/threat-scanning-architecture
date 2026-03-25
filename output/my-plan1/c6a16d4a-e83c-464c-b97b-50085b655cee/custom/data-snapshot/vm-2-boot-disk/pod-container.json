@@ -1,0 +1,8 @@
+[
+  {
+    "podName": "virt-launcher-vm-2-xxxxx",
+    "containers": [
+      "compute"
+    ]
+  }
+]

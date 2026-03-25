@@ -8,19 +8,15 @@ import (
 // +kubebuilder:validation:Enum=TVK;TVO
 type BackupType string
 
-const (
-	TVK BackupType = "TVK"
-	TVO BackupType = "TVO"
-)
-
 // ScanPhase represents the current phase of scanning
-// +kubebuilder:validation:Enum=Queued;PreScan;Scanning
+// +kubebuilder:validation:Enum=Queued;PreScan;RedisDeployment;Scanning
 type ScanPhase string
 
 const (
-	Queued   ScanPhase = "Queued"
-	PreScan  ScanPhase = "PreScan"
-	Scanning ScanPhase = "Scanning"
+	Queued          ScanPhase = "Queued"
+	PreScan         ScanPhase = "PreScan"
+	RedisDeployment ScanPhase = "RedisDeployment"
+	Scanning        ScanPhase = "Scanning"
 )
 
 // ScanInstanceStatus represents the overall status of a scan instance
@@ -39,13 +35,13 @@ type ScanInstanceCondition struct {
 	// Phase defines the current phase of the scan.
 	// +nullable:true
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:Enum=Queued;PreScan;Scanning
+	// +kubebuilder:validation:Enum=Queued;PreScan;RedisDeployment;Scanning
 	Phase ScanPhase `json:"phase,omitempty"`
 
 	// Status is the status of the condition.
 	// +nullable:true
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:Enum=InProgress;Completed;Failed
+	// +kubebuilder:validation:Enum=InProgress;Completed;Failed;Ready
 	Status Status `json:"status,omitempty"`
 
 	// Timestamp is the time a condition occurred.

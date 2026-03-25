@@ -29,7 +29,19 @@ vendor/
 # Build artifacts
 cover.out
 
-
+# Python virtual environments
 **/venv
 **/.venv
+
+# Test artifacts
 test_ignore/
+*.whl
+
+# Webhook certificates (for development/testing)
+config/webhook/certs/
+*.key
+*.crt
+*.csr
+*.srl
+
+**/__pycache__

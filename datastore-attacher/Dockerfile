@@ -1,4 +1,4 @@
-FROM python:3.9-slim
+FROM python:3.12-slim
 
 LABEL name=threat-scanning-datastore-attacher
 LABEL vendor=Trilio\ Data\ Inc.
@@ -29,9 +29,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install s3fuse with private index using secret
-RUN --mount=type=secret,id=S3_FUSE_PIP_INDEX_URL,env=S3_FUSE_PIP_INDEX_URL \
-    pip3 install --upgrade pip && \
-    pip3 install --no-cache-dir 's3fuse==5.2.0' --extra-index-url ${S3_FUSE_PIP_INDEX_URL}
+# RUN --mount=type=secret,id=S3_FUSE_PIP_INDEX_URL,env=S3_FUSE_PIP_INDEX_URL \
+#     pip3 install --upgrade pip setuptools wheel && \
+#     pip3 install --no-cache-dir 's3fuse==5.2.0' --extra-index-url ${S3_FUSE_PIP_INDEX_URL}
+
+RUN pip3 install --upgrade pip setuptools wheel
 
 # Install Python dependencies
 COPY requirements.txt /tmp/requirements.txt
@@ -64,6 +66,10 @@ RUN ARCH=$(uname -m) && \
 
 # Copy datastore-attacher code
 COPY . /opt/threat-scanning/datastore-attacher/
+
+RUN pip3 install --no-cache-dir /opt/threat-scanning/datastore-attacher/s3fuse-5.2.0a2-py3-none-any.whl
+
+RUN rm ./opt/threat-scanning/datastore-attacher/s3fuse-5.2.0a2-py3-none-any.whl
 
 WORKDIR /opt/threat-scanning
 

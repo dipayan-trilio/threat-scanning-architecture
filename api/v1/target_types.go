@@ -19,6 +19,15 @@ const (
 	NFS         TargetType = "NFS"
 )
 
+// BackupProductType is the backup product type (TVK or TVO).
+// +kubebuilder:validation:Enum=TVK;TVO
+type BackupProductType string
+
+const (
+	TVK BackupProductType = "TVK"
+	TVO BackupProductType = "TVO"
+)
+
 // Vendor is the third party storage vendor hosting the target
 // +kubebuilder:validation:Enum=AWS;RedhatCeph;Ceph;IBMCleversafe;Cloudian;Scality;NetApp;Cohesity;SwiftStack;Wasabi;MinIO;DellEMC;Azure;DigitalOcean;OVH;Other
 type Vendor string
@@ -49,7 +58,7 @@ const (
 )
 
 // Status represents the current status of a resource
-// +kubebuilder:validation:Enum=InProgress;Available;Unavailable;Completed;Failed
+// +kubebuilder:validation:Enum=InProgress;Available;Unavailable;Completed;Failed;Ready
 type Status string
 
 const (
@@ -58,6 +67,7 @@ const (
 	Unavailable Status = "Unavailable"
 	Completed   Status = "Completed"
 	Failed      Status = "Failed"
+	Ready       Status = "Ready"
 )
 
 // OperationType defines the type of operation being performed
@@ -146,6 +156,11 @@ type TargetSpec struct {
 	// Type is the type of target for backup storage.
 	Type TargetType `json:"type"`
 
+	// TargetType is the backup product type (TVK or TVO).
+	// Required for backup targets, not applicable for reporting targets.
+	// +kubebuilder:validation:Optional
+	TargetType BackupProductType `json:"targetType,omitempty"`
+
 	// Vendor is the third party storage vendor hosting the target
 	Vendor Vendor `json:"vendor"`
 
@@ -190,6 +205,7 @@ type TargetStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
+// +kubebuilder:printcolumn:name="TargetType",type=string,JSONPath=`.spec.targetType`
 // +kubebuilder:printcolumn:name="Vendor",type=string,JSONPath=`.spec.vendor`
 // +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.status`
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
@@ -251,6 +267,16 @@ func (in *Target) IsReportingTarget() bool {
 	}
 	value, exists := in.Annotations[ReportingTargetAnnotationKey]
 	return exists && value == "true"
+}
+
+// IsTVKBackupType returns true if the backup type is TVK
+func (in *Target) IsTVKBackupType() bool {
+	return in.Spec.TargetType == TVK
+}
+
+// IsTVOBackupType returns true if the backup type is TVO
+func (in *Target) IsTVOBackupType() bool {
+	return in.Spec.TargetType == TVO
 }
 
 // LastMatchingTargetCondition returns the last matching target condition

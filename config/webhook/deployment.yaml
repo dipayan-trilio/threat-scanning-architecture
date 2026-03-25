@@ -1,45 +1,50 @@
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: threat-scanning-system
-  labels:
-    app.kubernetes.io/name: threat-scanning
-    app.kubernetes.io/part-of: threat-scanning
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: threat-scanning-webhook
-  namespace: threat-scanning-system
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: threat-scanning-webhook
+  name: threat-scanning-controller
   namespace: threat-scanning-system
   labels:
-    control-plane: controller-manager
     app.kubernetes.io/name: threat-scanning
+    app.kubernetes.io/component: webhook
     app.kubernetes.io/part-of: threat-scanning
 spec:
   replicas: 1
   selector:
     matchLabels:
-      control-plane: controller-manager
       app.kubernetes.io/name: threat-scanning
+      app.kubernetes.io/component: webhook
   template:
     metadata:
       labels:
-        control-plane: controller-manager
         app.kubernetes.io/name: threat-scanning
+        app.kubernetes.io/component: webhook
+        app.kubernetes.io/part-of: threat-scanning
     spec:
-      serviceAccountName: threat-scanning-webhook
+      serviceAccountName: trilio-threat-scanning
       securityContext:
         runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      # Init container generates certificates at startup (Trilio's approach)
+      initContainers:
+      - name: webhook-cert-init
+        image: eu.gcr.io/amazing-chalice-243510/threat-scanning-controller:latest
+        imagePullPolicy: Always
+        command:
+        - /manager
+        args:
+        - --init-certs-only
+        env:
+        - name: INSTALL_NAMESPACE
+          value: "threat-scanning-system"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
       containers:
       - name: manager
-        image: eu.gcr.io/amazing-chalice-243510/threat-scanning-webhook:latest
+        image: eu.gcr.io/amazing-chalice-243510/threat-scanning-controller:latest
         imagePullPolicy: Always
         command:
         - /manager
@@ -47,30 +52,54 @@ spec:
         - --enable-webhook=true
         - --webhook-port=9443
         - --webhook-cert-dir=/tmp/k8s-webhook-server/serving-certs
-        - --enable-leader-election=true
+        - --leader-elect=true
+        env:
+        - name: INSTALL_NAMESPACE
+          value: "default"
+        - name: PRODUCTION
+          value: "false"
+        - name: RELATED_IMAGE_VALIDATOR
+          value: "eu.gcr.io/amazing-chalice-243510/threatscanning/datastore-attacher:v9.5"
+        - name: RELATED_IMAGE_POLLER
+          value: "eu.gcr.io/amazing-chalice-243510/threatscanning/datastore-attacher:v9.5"
+        - name: RELATED_IMAGE_SCANNER
+          value: "eu.gcr.io/amazing-chalice-243510/threatscanning/scan-engine:v1.6"
+        - name: RELATED_IMAGE_JANITOR
+          value: "eu.gcr.io/amazing-chalice-243510/threatscanning/janitor:v1.2"
+        - name: RELATED_IMAGE_REDIS
+          value: "redis:7-alpine"
+        - name: TARGET_POLLING_DISABLED
+          value: "true"
+        - name: TARGET_POLLING_CRON
+          value: "2 * * * *"
+        - name: DATABASE_URL
+          value: "sqlite+aiosqlite:///./scan_analysis.db"
         ports:
         - containerPort: 9443
-          name: webhook-server
+          name: webhook
+          protocol: TCP
+        - containerPort: 8080
+          name: metrics
           protocol: TCP
         - containerPort: 8081
           name: health
           protocol: TCP
-        volumeMounts:
-        - mountPath: /tmp/k8s-webhook-server/serving-certs
-          name: cert
-          readOnly: true
         livenessProbe:
           httpGet:
             path: /healthz
             port: 8081
-          initialDelaySeconds: 15
+          initialDelaySeconds: 30
           periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 3
         readinessProbe:
           httpGet:
             path: /readyz
             port: 8081
-          initialDelaySeconds: 5
+          initialDelaySeconds: 10
           periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
         resources:
           limits:
             cpu: 500m
@@ -83,10 +112,13 @@ spec:
           capabilities:
             drop:
             - ALL
+        volumeMounts:
+        - name: webhook-certs
+          mountPath: /tmp/k8s-webhook-server/serving-certs
+          readOnly: true
       volumes:
-      - name: cert
+      - name: webhook-certs
         secret:
-          defaultMode: 420
-          secretName: webhook-server-cert
+          secretName: threat-scanning-webhook-certs
+          optional: true  # Secret will be created by init container
       terminationGracePeriodSeconds: 10
-

@@ -3,6 +3,7 @@ kind: Target
 metadata:
   name: minio-target
 spec:
+  targetType: TVK
   type: ObjectStore
   vendor: Other
   objectStoreCredentials:

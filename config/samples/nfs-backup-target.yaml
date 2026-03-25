@@ -4,6 +4,7 @@ kind: Target
 metadata:
   name: nfs-backup-target
 spec:
+  targetType: TVK
   type: NFS
   vendor: Other
   nfsCredentials:

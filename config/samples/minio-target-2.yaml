@@ -3,14 +3,15 @@ kind: Target
 metadata:
   name: minio-target-2
 spec:
+  targetType: TVK
   type: ObjectStore
   vendor: Other
   objectStoreCredentials:
-    url: https://api.minio.k8strilio.net
+    url: http://192.168.0.113:9000
     region: us-east-1
-    bucketName: dipayan-ts
+    bucketName: fuse
     credentialSecret:
-      name: minio-target-secret
+      name: minio-local-secret
       namespace: default
     skipCertVerification: true
   thresholdCapacity: 100Gi

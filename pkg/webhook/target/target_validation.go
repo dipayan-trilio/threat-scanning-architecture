@@ -7,7 +7,10 @@ import (
 	"reflect"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1 "github.com/trilioData/threat-scanning-architecture/api/v1"
@@ -20,9 +23,14 @@ func ValidateTargetCreate(ctx context.Context, cl client.Client, target *v1.Targ
 		return err
 	}
 
+	// Validate referenced resources exist (secrets, configmaps)
+	if err := validateReferencedResources(ctx, cl, target); err != nil {
+		return err
+	}
+
 	// Check for reporting target uniqueness
 	if target.IsReportingTarget() {
-		if err := validateReportingTargetUniqueness(ctx, cl, target); err != nil {
+		if err := validateReportingTargetUniqueness(ctx, cl, target, true); err != nil {
 			return err
 		}
 	}
@@ -37,6 +45,19 @@ func ValidateTargetUpdate(ctx context.Context, cl client.Client, oldTarget, newT
 		return err
 	}
 
+	// Validate referenced resources exist (secrets, configmaps)
+	if err := validateReferencedResources(ctx, cl, newTarget); err != nil {
+		return err
+	}
+
+	// Check if spec is being updated
+	if !reflect.DeepEqual(oldTarget.Spec, newTarget.Spec) {
+		// Prevent spec update if target is referenced by active scan instances
+		if err := validateNoActiveScanInstances(ctx, cl, newTarget); err != nil {
+			return fmt.Errorf("cannot update target spec: %w", err)
+		}
+	}
+
 	// Prevent conversion from backup to reporting
 	if !oldTarget.IsReportingTarget() && newTarget.IsReportingTarget() {
 		return fmt.Errorf("[spec.targetType] conversion from backup target to reporting target is not allowed")
@@ -44,7 +65,7 @@ func ValidateTargetUpdate(ctx context.Context, cl client.Client, oldTarget, newT
 
 	// Check for reporting target uniqueness if converting to reporting
 	if newTarget.IsReportingTarget() && !oldTarget.IsReportingTarget() {
-		if err := validateReportingTargetUniqueness(ctx, cl, newTarget); err != nil {
+		if err := validateReportingTargetUniqueness(ctx, cl, newTarget, false); err != nil {
 			return err
 		}
 	}
@@ -109,15 +130,29 @@ func validateObjectStoreTarget(target *v1.Target) error {
 		return fmt.Errorf("[spec.objectStoreCredentials.credentialSecret] missing required field: credentialSecret for target not specified")
 	}
 
+	// CRITICAL: Validate that credential secret has namespace specified
+	// Since Target is cluster-scoped, we require explicit namespace
+	if target.Spec.ObjectStoreCredentials.CredentialSecret.Namespace == "" {
+		return fmt.Errorf("[spec.objectStoreCredentials.credentialSecret.namespace] namespace must be specified for credential secret (target is cluster-scoped)")
+	}
+
 	// BucketName is required
 	if target.Spec.ObjectStoreCredentials.BucketName == "" {
 		return fmt.Errorf("[spec.objectStoreCredentials.bucketName] bucketName for object store missing")
 	}
 
 	// SSL cert config validation
-	if target.Spec.ObjectStoreCredentials.SSLCertConfig != nil &&
-		strings.TrimSpace(target.Spec.ObjectStoreCredentials.SSLCertConfig.CertKey) == "" {
-		return fmt.Errorf("[spec.objectStoreCredentials.sslCertConfig.certKey] certKey for object store sslCertConfig is missing")
+	if target.Spec.ObjectStoreCredentials.SSLCertConfig != nil {
+		if strings.TrimSpace(target.Spec.ObjectStoreCredentials.SSLCertConfig.CertKey) == "" {
+			return fmt.Errorf("[spec.objectStoreCredentials.sslCertConfig.certKey] certKey for object store sslCertConfig is missing")
+		}
+		if target.Spec.ObjectStoreCredentials.SSLCertConfig.CertConfigMap == nil {
+			return fmt.Errorf("[spec.objectStoreCredentials.sslCertConfig.certConfigMap] certConfigMap reference is missing")
+		}
+		// Validate namespace is specified for SSL cert configmap
+		if target.Spec.ObjectStoreCredentials.SSLCertConfig.CertConfigMap.Namespace == "" {
+			return fmt.Errorf("[spec.objectStoreCredentials.sslCertConfig.certConfigMap.namespace] namespace must be specified for SSL cert configmap")
+		}
 	}
 
 	// Vendor-specific validations
@@ -154,6 +189,11 @@ func validateObjectStoreTarget(target *v1.Target) error {
 		return validateReportingTarget(target)
 	}
 
+	// Validate targetType is specified for non-reporting targets
+	if !target.IsReportingTarget() && target.Spec.TargetType == "" {
+		return fmt.Errorf("[spec.targetType] targetType (TVK/TVO) must be specified for backup targets")
+	}
+
 	return nil
 }
 
@@ -171,26 +211,113 @@ func validateReportingTarget(target *v1.Target) error {
 }
 
 // validateReportingTargetUniqueness ensures only one reporting target exists in the cluster
-func validateReportingTargetUniqueness(ctx context.Context, cl client.Client, target *v1.Target) error {
+func validateReportingTargetUniqueness(ctx context.Context, cl client.Client, target *v1.Target, isCreate bool) error {
 	// List all targets in the cluster
 	targetList := &v1.TargetList{}
 	if err := cl.List(ctx, targetList); err != nil {
 		return fmt.Errorf("error listing targets to check reporting target uniqueness: %w", err)
 	}
 
-	// Check if any other target is already a reporting target
+	// Check if any other target is already a reporting target with Available status
 	for i := range targetList.Items {
 		existingTarget := &targetList.Items[i]
 
 		// Skip the current target being created/updated
-		if existingTarget.Name == target.Name {
+		if !isCreate && existingTarget.Name == target.Name {
 			continue
 		}
 
-		// Check if this target is a reporting target
-		if existingTarget.IsReportingTarget() {
-			return fmt.Errorf("[spec.targetType] only one reporting target is allowed in the cluster. "+
-				"Existing reporting target: %s", existingTarget.Name)
+		// Check if this target is a reporting target with Available status
+		if existingTarget.IsReportingTarget() && existingTarget.Status.Status == v1.Available {
+			return fmt.Errorf("only one available reporting target is allowed, existing reporting target: %s", existingTarget.Name)
+		}
+	}
+
+	return nil
+}
+
+// ValidateTargetDelete validates a Target on deletion
+func ValidateTargetDelete(ctx context.Context, cl client.Client, target *v1.Target) error {
+	// Prevent deletion if target is referenced by any active or queued scan instances
+	if err := validateNoActiveScanInstances(ctx, cl, target); err != nil {
+		return fmt.Errorf("cannot delete target: %w", err)
+	}
+	return nil
+}
+
+// validateReferencedResources validates that credential secret and SSL configmap exist
+func validateReferencedResources(ctx context.Context, cl client.Client, target *v1.Target) error {
+	if target.IsObjectStoreTarget() {
+		// Validate credential secret exists
+		if target.Spec.ObjectStoreCredentials.CredentialSecret != nil {
+			secretRef := target.Spec.ObjectStoreCredentials.CredentialSecret
+			secret := &corev1.Secret{}
+			secretKey := types.NamespacedName{
+				Name:      secretRef.Name,
+				Namespace: secretRef.Namespace,
+			}
+			if err := cl.Get(ctx, secretKey, secret); err != nil {
+				if apierrors.IsNotFound(err) {
+					return fmt.Errorf("[spec.objectStoreCredentials.credentialSecret] secret '%s' not found in namespace '%s'",
+						secretRef.Name, secretRef.Namespace)
+				}
+				return fmt.Errorf("[spec.objectStoreCredentials.credentialSecret] error checking secret existence: %w", err)
+			}
+
+			// Validate secret has required keys
+			if _, ok := secret.Data["accessKey"]; !ok {
+				return fmt.Errorf("[spec.objectStoreCredentials.credentialSecret] secret '%s' missing required key 'accessKey'",
+					secretRef.Name)
+			}
+			if _, ok := secret.Data["secretKey"]; !ok {
+				return fmt.Errorf("[spec.objectStoreCredentials.credentialSecret] secret '%s' missing required key 'secretKey'",
+					secretRef.Name)
+			}
+		}
+
+		// Validate SSL cert configmap exists if configured
+		if target.HasSSLCertConfig() {
+			cmRef := target.Spec.ObjectStoreCredentials.SSLCertConfig.CertConfigMap
+			cm := &corev1.ConfigMap{}
+			cmKey := types.NamespacedName{
+				Name:      cmRef.Name,
+				Namespace: cmRef.Namespace,
+			}
+			if err := cl.Get(ctx, cmKey, cm); err != nil {
+				if apierrors.IsNotFound(err) {
+					return fmt.Errorf("[spec.objectStoreCredentials.sslCertConfig.certConfigMap] configmap '%s' not found in namespace '%s'",
+						cmRef.Name, cmRef.Namespace)
+				}
+				return fmt.Errorf("[spec.objectStoreCredentials.sslCertConfig.certConfigMap] error checking configmap existence: %w", err)
+			}
+
+			// Validate configmap has the specified cert key
+			certKey := target.Spec.ObjectStoreCredentials.SSLCertConfig.CertKey
+			if _, ok := cm.Data[certKey]; !ok {
+				return fmt.Errorf("[spec.objectStoreCredentials.sslCertConfig.certKey] configmap '%s' missing required key '%s'",
+					cmRef.Name, certKey)
+			}
+		}
+	}
+
+	return nil
+}
+
+// validateNoActiveScanInstances checks if target is referenced by active scan instances
+func validateNoActiveScanInstances(ctx context.Context, cl client.Client, target *v1.Target) error {
+	scanInstanceList := &v1.ScanInstanceList{}
+	if err := cl.List(ctx, scanInstanceList); err != nil {
+		return fmt.Errorf("error listing scan instances: %w", err)
+	}
+
+	for _, si := range scanInstanceList.Items {
+		// Check if scan instance references this target
+		if si.Spec.BackupTarget.Name == target.Name {
+			// Check if scan instance is active (InProgress or Queued)
+			if si.Status.Status == v1.ScanInProgress || si.Status.Status == v1.ScanQueued {
+				return fmt.Errorf("target is referenced by active scan instance '%s' with status '%s'",
+					si.Name, si.Status.Status)
+			}
 		}
 	}
 

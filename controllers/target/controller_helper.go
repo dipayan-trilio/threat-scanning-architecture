@@ -755,7 +755,7 @@ func (r *Reconciler) reconcilePollerCronJob(ctx context.Context, target *v1.Targ
 
 	// Get desired CronJob spec
 	cronJobName := helpers.GetTargetResourceName(internal.TargetPollerPrefix, credentialHash)
-	desiredCronJob, err := helpers.GetTargetPollerCronJob(ctx, r.Client, target, credentialHash)
+	desiredCronJob, err := helpers.GetTargetPollerCronJob(ctx, r.Client, target, credentialHash, r.Log)
 	if err != nil {
 		return fmt.Errorf("error creating poller cronjob spec: %w", err)
 	}
@@ -797,6 +797,26 @@ func (r *Reconciler) reconcilePollerCronJob(ctx context.Context, target *v1.Targ
 		updateReason = fmt.Sprintf("schedule changed from %s to %s", existingCronJob.Spec.Schedule, desiredCronJob.Spec.Schedule)
 	}
 
+	// Compare suspend state (for TARGET_POLLING_DISABLED)
+	existingSuspend := existingCronJob.Spec.Suspend != nil && *existingCronJob.Spec.Suspend
+	desiredSuspend := desiredCronJob.Spec.Suspend != nil && *desiredCronJob.Spec.Suspend
+	if existingSuspend != desiredSuspend {
+		needsUpdate = true
+		if updateReason != "" {
+			updateReason += "; "
+		}
+		updateReason += fmt.Sprintf("suspend changed from %v to %v", existingSuspend, desiredSuspend)
+	}
+
+	// Compare concurrency policy
+	if existingCronJob.Spec.ConcurrencyPolicy != desiredCronJob.Spec.ConcurrencyPolicy {
+		needsUpdate = true
+		if updateReason != "" {
+			updateReason += "; "
+		}
+		updateReason += fmt.Sprintf("concurrency policy changed from %s to %s", existingCronJob.Spec.ConcurrencyPolicy, desiredCronJob.Spec.ConcurrencyPolicy)
+	}
+
 	// Compare image
 	if len(existingCronJob.Spec.JobTemplate.Spec.Template.Spec.Containers) > 0 &&
 		len(desiredCronJob.Spec.JobTemplate.Spec.Template.Spec.Containers) > 0 {
@@ -804,7 +824,10 @@ func (r *Reconciler) reconcilePollerCronJob(ctx context.Context, target *v1.Targ
 		desiredImage := desiredCronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Image
 		if existingImage != desiredImage {
 			needsUpdate = true
-			updateReason = fmt.Sprintf("image changed from %s to %s", existingImage, desiredImage)
+			if updateReason != "" {
+				updateReason += "; "
+			}
+			updateReason += fmt.Sprintf("image changed from %s to %s", existingImage, desiredImage)
 		}
 	}
 

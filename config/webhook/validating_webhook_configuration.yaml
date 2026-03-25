@@ -1,0 +1,47 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: threat-scanning-validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: threat-scanning-webhook-service
+      namespace: threat-scanning-system
+      path: /validate-threatscanning-trilio-io-v1-target
+  failurePolicy: Fail
+  name: vtarget.threatscanning.trilio.io
+  rules:
+  - apiGroups:
+    - threatscanning.trilio.io
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - targets
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: threat-scanning-webhook-service
+      namespace: threat-scanning-system
+      path: /validate-threatscanning-trilio-io-v1-scaninstance
+  failurePolicy: Fail
+  name: vscaninstance.threatscanning.trilio.io
+  rules:
+  - apiGroups:
+    - threatscanning.trilio.io
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - scaninstances
+  sideEffects: None

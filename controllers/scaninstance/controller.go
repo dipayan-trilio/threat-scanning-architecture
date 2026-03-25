@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/sirupsen/logrus"
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -35,14 +36,15 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=threatscanning.trilio.io,resources=scaninstances,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=threatscanning.trilio.io,resources=scaninstances/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile will be executed on every change for ScanInstance API resource
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithField("scanInstance", req.NamespacedName)
 
-	log.Infof("Fetching the ScanInstance resource: %s", req.String())
 	scanInstance := &v1.ScanInstance{}
 	if err := r.Client.Get(ctx, req.NamespacedName, scanInstance); err != nil {
 		// Don't log error for NotFound - this is expected when scanInstance is deleted
@@ -50,6 +52,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			r.Log.WithError(err).Errorf("error occurred while fetching the instance of ScanInstance: %s", req.String())
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Early exit for terminal states to avoid unnecessary reconciliations
+	// BUT: Allow deletion to proceed even in terminal states (finalizer must run)
+	if !scanInstance.ObjectMeta.DeletionTimestamp.IsZero() {
+		// ScanInstance is being deleted, let finalizer logic handle it
+		log.Infof("ScanInstance is being deleted: %s", req.String())
+	} else if scanInstance.Status.Status == v1.ScanCompleted || scanInstance.Status.Status == v1.ScanFailed {
+		// ScanInstance is in terminal state and NOT being deleted, skip reconciliation
+		log.Debug("ScanInstance is in terminal state, skipping reconciliation")
+		return ctrl.Result{}, nil
+	} else {
+		// Normal reconciliation for active ScanInstance
+		log.Infof("Fetching the ScanInstance resource: %s", req.String())
 	}
 
 	originalScanInstance := scanInstance.DeepCopy()
@@ -70,17 +86,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			r.Log.WithError(err).Error("error while initializing ScanInstance status")
 			return ctrl.Result{}, err
 		}
-	}
-
-	// Cleanup jobs if ScanInstance has completed successfully
-	// Following TVK pattern: jobs are cleaned up only after the entire process completes
-	if scanInstance.Status.Status == v1.ScanCompleted {
-		log.Info("ScanInstance completed, cleaning up jobs")
-		if err := r.cleanupScanInstanceJobs(ctx, scanInstance); err != nil {
-			// Log error but don't fail reconciliation - cleanup is best-effort
-			r.Log.WithError(err).Error("error while cleaning up scan instance jobs")
-		}
-		return ctrl.Result{}, nil
 	}
 
 	// Check if PreScan phase is already completed (idempotency check)
@@ -264,6 +269,14 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 		}
 
+		// For Deployment: only process if managed by threat-scanning-controller
+		if deploy, ok := e.Object.(*appsv1.Deployment); ok {
+			managedBy, exists := deploy.GetLabels()["app.kubernetes.io/managed-by"]
+			if !exists || managedBy != internal.ManagedBy {
+				return false
+			}
+		}
+
 		return true
 	}
 
@@ -271,6 +284,14 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// For Job: only process if managed by threat-scanning-controller
 		if job, ok := e.Object.(*batchv1.Job); ok {
 			managedBy, exists := job.GetLabels()["app.kubernetes.io/managed-by"]
+			if !exists || managedBy != internal.ManagedBy {
+				return false
+			}
+		}
+
+		// For Deployment: only process if managed by threat-scanning-controller
+		if deploy, ok := e.Object.(*appsv1.Deployment); ok {
+			managedBy, exists := deploy.GetLabels()["app.kubernetes.io/managed-by"]
 			if !exists || managedBy != internal.ManagedBy {
 				return false
 			}
@@ -308,6 +329,25 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 			return false
 		}
 
+		// For Deployment: only reconcile if status changed and it's managed by us
+		if currentDeployObj, ok := e.ObjectNew.DeepCopyObject().(*appsv1.Deployment); ok {
+			// Filter: Only process deployments managed by threat-scanning-controller
+			managedBy, exists := currentDeployObj.GetLabels()["app.kubernetes.io/managed-by"]
+			if !exists || managedBy != internal.ManagedBy {
+				return false
+			}
+
+			previousDeployObj := e.ObjectOld.DeepCopyObject().(*appsv1.Deployment)
+
+			// Only reconcile if deployment status changed (ready replicas, availability)
+			if previousDeployObj.Status.ReadyReplicas != currentDeployObj.Status.ReadyReplicas ||
+				previousDeployObj.Status.AvailableReplicas != currentDeployObj.Status.AvailableReplicas ||
+				len(previousDeployObj.Status.Conditions) != len(currentDeployObj.Status.Conditions) {
+				return true
+			}
+			return false
+		}
+
 		return true
 	}
 
@@ -320,6 +360,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1.ScanInstance{}).
 		Watches(&batchv1.Job{}, handler.EnqueueRequestsFromMapFunc(r.jobHandler)).
+		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.deploymentHandler)).
 		WithEventFilter(p).
 		Complete(r)
 }
@@ -336,6 +377,28 @@ func (r *Reconciler) jobHandler(ctx context.Context, obj client.Object) []reconc
 	}
 
 	// Get scan instance name from job label
+	scanInstanceName, exists := obj.GetLabels()[internal.ScanInstanceNameLabel]
+	if !exists {
+		return nil
+	}
+
+	return []reconcile.Request{
+		{NamespacedName: types.NamespacedName{Name: scanInstanceName}},
+	}
+}
+
+func (r *Reconciler) deploymentHandler(ctx context.Context, obj client.Object) []reconcile.Request {
+	if obj == nil {
+		return nil
+	}
+
+	// Filter: Only process deployments managed by threat-scanning-controller
+	managedBy, exists := obj.GetLabels()["app.kubernetes.io/managed-by"]
+	if !exists || managedBy != internal.ManagedBy {
+		return nil
+	}
+
+	// Get scan instance name from deployment label
 	scanInstanceName, exists := obj.GetLabels()[internal.ScanInstanceNameLabel]
 	if !exists {
 		return nil

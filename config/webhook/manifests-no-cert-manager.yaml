@@ -1,0 +1,243 @@
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: threat-scanning-system
+  labels:
+    app.kubernetes.io/part-of: threat-scanning
+---
+# Service for webhook
+apiVersion: v1
+kind: Service
+metadata:
+  name: threat-scanning-webhook-service
+  namespace: default
+spec:
+  ports:
+  - port: 443
+    protocol: TCP
+    targetPort: 9443
+  selector:
+    app.kubernetes.io/name: threat-scanning
+    app.kubernetes.io/component: webhook
+---
+# Deployment with init container for certificate generation
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: threat-scanning-controller
+  # namespace: threat-scanning-system
+  labels:
+    app.kubernetes.io/name: threat-scanning
+    app.kubernetes.io/component: webhook
+    app.kubernetes.io/part-of: threat-scanning
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: threat-scanning
+      app.kubernetes.io/component: webhook
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: threat-scanning
+        app.kubernetes.io/component: webhook
+        app.kubernetes.io/part-of: threat-scanning
+    spec:
+      serviceAccountName: trilio-threat-scanning
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      # Init container generates certificates at startup (Trilio's approach)
+      initContainers:
+      - name: webhook-cert-init
+        image: eu.gcr.io/amazing-chalice-243510/threatscanning/controller:v1.6
+        imagePullPolicy: Always
+        command:
+        - /manager
+        args:
+        - --init-certs-only
+        env:
+        - name: INSTALL_NAMESPACE
+          value: "default"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+      containers:
+      - name: manager
+        image: eu.gcr.io/amazing-chalice-243510/threatscanning/controller:v1.6
+        imagePullPolicy: Always
+        command:
+        - /manager
+        args:
+        - --enable-webhook=true
+        - --webhook-port=9443
+        - --webhook-cert-dir=/tmp/k8s-webhook-server/serving-certs
+        - --leader-elect=true
+        env:
+        - name: INSTALL_NAMESPACE
+          value: "default"
+        - name: PRODUCTION
+          value: "false"
+        - name: RELATED_IMAGE_VALIDATOR
+          value: "eu.gcr.io/amazing-chalice-243510/threatscanning/datastore-attacher:v9.5"
+        - name: RELATED_IMAGE_POLLER
+          value: "eu.gcr.io/amazing-chalice-243510/threatscanning/datastore-attacher:v9.5"
+        - name: RELATED_IMAGE_SCANNER
+          value: "eu.gcr.io/amazing-chalice-243510/threatscanning/scan-engine:v1.6"
+        - name: RELATED_IMAGE_JANITOR
+          value: "eu.gcr.io/amazing-chalice-243510/threatscanning/janitor:v1.2"
+        - name: RELATED_IMAGE_REDIS
+          value: "redis:7-alpine"
+        - name: TARGET_POLLING_DISABLED
+          value: "true"
+        - name: TARGET_POLLING_CRON
+          value: "2 * * * *"
+        - name: DATABASE_URL
+          value: "sqlite+aiosqlite:///./scan_analysis.db"
+        ports:
+        - containerPort: 9443
+          name: webhook
+          protocol: TCP
+        - containerPort: 8080
+          name: metrics
+          protocol: TCP
+        - containerPort: 8081
+          name: health
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: webhook-certs
+          mountPath: /tmp/k8s-webhook-server/serving-certs
+          readOnly: true
+      volumes:
+      - name: webhook-certs
+        secret:
+          secretName: threat-scanning-webhook-certs
+          optional: true  # Secret will be created by init container
+      terminationGracePeriodSeconds: 10
+---
+# Validating Webhook Configuration
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: threat-scanning-validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: threat-scanning-webhook-service
+      namespace: default
+      path: /validate-threatscanning-trilio-io-v1-target
+  failurePolicy: Fail
+  name: vtarget.threatscanning.trilio.io
+  rules:
+  - apiGroups:
+    - threatscanning.trilio.io
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - targets
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: threat-scanning-webhook-service
+      namespace: default
+      path: /validate-threatscanning-trilio-io-v1-scaninstance
+  failurePolicy: Fail
+  name: vscaninstance.threatscanning.trilio.io
+  rules:
+  - apiGroups:
+    - threatscanning.trilio.io
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - scaninstances
+  sideEffects: None
+---
+# Mutating Webhook Configuration
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: threat-scanning-mutating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: threat-scanning-webhook-service
+      namespace: default
+      path: /mutate-threatscanning-trilio-io-v1-target
+  failurePolicy: Fail
+  name: mtarget.threatscanning.trilio.io
+  rules:
+  - apiGroups:
+    - threatscanning.trilio.io
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    resources:
+    - targets
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: threat-scanning-webhook-service
+      namespace: default
+      path: /mutate-threatscanning-trilio-io-v1-scaninstance
+  failurePolicy: Fail
+  name: mscaninstance.threatscanning.trilio.io
+  rules:
+  - apiGroups:
+    - threatscanning.trilio.io
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    resources:
+    - scaninstances
+  sideEffects: None

@@ -1,0 +1,8 @@
+{
+  "apiVersion": "v1",
+  "kind": "Namespace",
+  "metadata": {
+    "name": "default",
+    "uid": "4d26e5d0-77b7-421c-93cb-ec5314c1aabc"
+  }
+}

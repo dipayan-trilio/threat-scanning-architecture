@@ -78,18 +78,6 @@ class BaseTargetHandler(ABC):
     # ============= Abstract Methods (Type-specific) =============
     
     @abstractmethod
-    def detect_backup_type(self) -> str:
-        """
-        Detect the backup type (TVK/TVO).
-        
-        Should check for type-specific marker files (e.g., tvk-meta.json).
-        
-        Returns:
-            'TVK', 'TVO', or 'UNKNOWN'
-        """
-        pass
-    
-    @abstractmethod
     def populate_storage_state(self) -> StorageState:
         """
         Populate the storage state with all backups from the target.
@@ -147,25 +135,15 @@ class BaseTargetHandler(ABC):
         Initialize the handler.
         
         Steps:
-        1. Detect backup type (if not already detected by factory)
-        2. Populate storage state
-        3. Start worker threads
+        1. Populate storage state
+        2. Start worker threads
         """
         self.logger.info("Starting initialization phase")
         
-        # Step 1: Detect backup type (skip if already detected by factory)
-        if not hasattr(self, 'backup_type_detected') or not self.backup_type_detected:
-            backup_type = self.detect_backup_type()
-            self.logger.info(f"Detected backup type: {backup_type}")
-            
-            if backup_type == 'UNKNOWN':
-                raise RuntimeError(
-                    f"Could not determine backup type for target {self.target_name}"
-                )
-        else:
-            self.logger.info(f"Backup type already detected by factory: {self.backup_type}")
+        # Backup type is already set by factory from command-line argument
+        self.logger.info(f"Using backup type: {self.backup_type}")
         
-        # Step 2: Populate storage state
+        # Step 1: Populate storage state
         self.logger.info("Populating storage state...")
         self.storage_state = self.populate_storage_state()
         self.logger.info(
@@ -173,7 +151,7 @@ class BaseTargetHandler(ABC):
             f"{self.storage_state.total_backups} backups"
         )
         
-        # Step 3: Start worker threads
+        # Step 2: Start worker threads
         self.logger.info("Starting worker threads...")
         self.worker_pool.start_all_workers(self.k8s_client, self.target_cr)
         self.logger.info("Completed initialization phase")
@@ -194,6 +172,10 @@ class BaseTargetHandler(ABC):
         4. Wait for cleanup queue to finish
         """
         self.logger.info("Starting cleanup phase")
+        
+        # Start cleanup workers if not already started
+        if not self.worker_pool.cleanup_workers:
+            self.worker_pool.start_cleanup_workers(self.k8s_client)
         
         # Step 1: List all ScanInstances for this target
         # Use target name for filtering (matches label set at creation)

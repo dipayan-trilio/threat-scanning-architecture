@@ -1,210 +1,329 @@
-# Webhook Deployment Guide
+# Webhook Configuration
 
-This directory contains the configuration for deploying the Threat Scanning validating webhook.
+This directory contains Kubernetes webhook configurations for the Threat Scanning Architecture.
 
-## Prerequisites
+## Overview
 
-1. **Kubernetes cluster** with admin access
-2. **cert-manager** installed (for automatic TLS certificate management)
-3. **Docker** with access to push to `eu.gcr.io/amazing-chalice-243510`
-
-### Install cert-manager
-
-If cert-manager is not already installed:
-
-```bash
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.0/cert-manager.yaml
-```
-
-Wait for cert-manager to be ready:
-
-```bash
-kubectl wait --for=condition=Available --timeout=300s deployment/cert-manager -n cert-manager
-kubectl wait --for=condition=Available --timeout=300s deployment/cert-manager-webhook -n cert-manager
-kubectl wait --for=condition=Available --timeout=300s deployment/cert-manager-cainjector -n cert-manager
-```
-
-## Quick Start - Full Deployment
-
-To build, push, and deploy the webhook in one command:
-
-```bash
-make webhook-build-deploy
-```
-
-This will:
-1. Run tests
-2. Build the Docker image as `eu.gcr.io/amazing-chalice-243510/threat-scanning-webhook:latest`
-3. Push the image to GCR
-4. Deploy the webhook deployment, service, and validating webhook configuration
-5. Create TLS certificates using cert-manager
-6. Wait for certificates to be ready
-
-## Step-by-Step Deployment
-
-### 1. Build and Push Docker Image
-
-```bash
-# Build only
-make webhook-docker-build
-
-# Build and push
-make webhook-docker-push
-```
-
-### 2. Deploy to Kubernetes
-
-```bash
-make webhook-deploy
-```
-
-This deploys:
-- Namespace: `threat-scanning-system`
-- ServiceAccount: `threat-scanning-webhook`
-- Deployment: `threat-scanning-webhook` (1 replica)
-- Service: `threat-scanning-webhook-service` (port 443 → 9443)
-- Certificate resources (cert-manager)
-- ValidatingWebhookConfiguration: `threat-scanning-validating-webhook`
-- RBAC: ClusterRole and ClusterRoleBinding
-
-### 3. Verify Deployment
-
-Check webhook pod status:
-
-```bash
-kubectl get pods -n threat-scanning-system
-```
-
-Check webhook logs:
-
-```bash
-make webhook-logs
-# or
-kubectl logs -n threat-scanning-system -l app.kubernetes.io/name=threat-scanning -f
-```
-
-Check certificate status:
-
-```bash
-kubectl get certificate -n threat-scanning-system
-kubectl describe certificate webhook-server-cert -n threat-scanning-system
-```
-
-Check validating webhook configuration:
-
-```bash
-kubectl get validatingwebhookconfigurations threat-scanning-validating-webhook
-kubectl describe validatingwebhookconfigurations threat-scanning-validating-webhook
-```
-
-## Webhook Validations
-
-The webhook validates Target CRD on CREATE and UPDATE operations:
-
-### CREATE Validations:
-1. Target type must be NFS or ObjectStore
-2. NFS targets must have NFS credentials (not ObjectStore credentials)
-3. ObjectStore targets must have ObjectStore credentials (not NFS credentials)
-4. ObjectStore targets must have credentialSecret and bucketName
-5. Non-AWS/Azure vendors must provide a valid URL
-6. SSL cert config must have certKey if provided
-7. Only one reporting target allowed in the cluster
-
-### UPDATE Validations:
-- All CREATE validations
-- Backup targets cannot be converted to reporting targets
-- Reporting targets can be converted to backup targets
-
-## Uninstall
-
-To remove the webhook:
-
-```bash
-make webhook-undeploy
-```
-
-## Local Testing with ngrok
-
-For local development, use the ngrok configuration:
-
-1. Generate local certificates:
-   ```bash
-   bash hack/test-webhook-locally.sh
-   ```
-
-2. Run controller locally:
-   ```bash
-   go run ./cmd/manager/main.go --enable-webhook --webhook-port=9443 --webhook-cert-dir=/tmp/k8s-webhook-server/serving-certs
-   ```
-
-3. In another terminal, expose via ngrok:
-   ```bash
-   ngrok http 9443
-   ```
-
-4. Update ngrok manifest with your URL:
-   ```bash
-   sed -i 's/YOUR_NGROK_URL/<your-ngrok-url>/g' config/webhook/manifests-ngrok.yaml
-   kubectl apply -f config/webhook/manifests-ngrok.yaml
-   ```
+The threat scanning system uses admission webhooks to validate and mutate Target and ScanInstance resources before they are persisted to etcd. This ensures data integrity and enforces business rules at the API level.
 
 ## Files
 
-- `deployment.yaml` - Webhook deployment, service account, and namespace
-- `manifests.yaml` - Service and ValidatingWebhookConfiguration (with cert-manager injection)
-- `certificate.yaml` - cert-manager Certificate and Issuer resources
-- `manifests-ngrok.yaml` - ValidatingWebhookConfiguration for ngrok testing
-- `kustomization.yaml` - Kustomize configuration
+### Webhook Configurations
+
+- **`validating_webhook_configuration.yaml`**: Validating webhook definitions
+  - Target validation (CREATE, UPDATE, DELETE)
+  - ScanInstance validation (CREATE, UPDATE, DELETE)
+
+- **`mutating_webhook_configuration.yaml`**: Mutating webhook definitions
+  - Target mutation (CREATE)
+  - ScanInstance mutation (CREATE)
+
+- **`service.yaml`**: Kubernetes Service exposing the webhook server
+  - Listens on port 443
+  - Routes to manager pod on port 9443
+
+### Kustomize Configuration
+
+- **`kustomization.yaml`**: Main kustomization file for webhook resources
+- **`kustomizeconfig.yaml`**: Custom transformations for webhook configurations
+
+## Webhook Endpoints
+
+### Target Webhooks
+
+| Type | Endpoint | Operations |
+|------|----------|------------|
+| Validating | `/validate-threatscanning-trilio-io-v1-target` | CREATE, UPDATE, DELETE |
+| Mutating | `/mutate-threatscanning-trilio-io-v1-target` | CREATE |
+
+### ScanInstance Webhooks
+
+| Type | Endpoint | Operations |
+|------|----------|------------|
+| Validating | `/validate-threatscanning-trilio-io-v1-scaninstance` | CREATE, UPDATE, DELETE |
+| Mutating | `/mutate-threatscanning-trilio-io-v1-scaninstance` | CREATE |
+
+## Deployment
+
+### Prerequisites
+
+1. **TLS Certificates**: Generate certificates for the webhook server
+   ```bash
+   ../../hack/generate-webhook-certs.sh
+   ```
+
+2. **Create TLS Secret**:
+   ```bash
+   kubectl create secret tls threat-scanning-webhook-certs \
+     --cert=certs/tls.crt \
+     --key=certs/tls.key \
+     -n threat-scanning-system
+   ```
+
+3. **Update CA Bundle**: Inject CA certificate into webhook configurations
+   ```bash
+   export CA_BUNDLE=$(cat certs/ca.crt | base64 | tr -d '\n')
+   
+   # Update validating webhook
+   kubectl patch validatingwebhookconfiguration \
+     threat-scanning-validating-webhook-configuration \
+     --type='json' \
+     -p="[{'op': 'add', 'path': '/webhooks/0/clientConfig/caBundle', 'value':'${CA_BUNDLE}'},
+         {'op': 'add', 'path': '/webhooks/1/clientConfig/caBundle', 'value':'${CA_BUNDLE}'}]"
+   
+   # Update mutating webhook
+   kubectl patch mutatingwebhookconfiguration \
+     threat-scanning-mutating-webhook-configuration \
+     --type='json' \
+     -p="[{'op': 'add', 'path': '/webhooks/0/clientConfig/caBundle', 'value':'${CA_BUNDLE}'},
+         {'op': 'add', 'path': '/webhooks/1/clientConfig/caBundle', 'value':'${CA_BUNDLE}'}]"
+   ```
+
+### Deploy Webhook Configurations
+
+```bash
+kubectl apply -k .
+```
+
+This will create:
+- ValidatingWebhookConfiguration
+- MutatingWebhookConfiguration
+- Service for webhook server
+
+### Verify Deployment
+
+```bash
+# Check webhook configurations
+kubectl get validatingwebhookconfiguration threat-scanning-validating-webhook-configuration
+kubectl get mutatingwebhookconfiguration threat-scanning-mutating-webhook-configuration
+
+# Check webhook service
+kubectl get svc -n threat-scanning-system threat-scanning-webhook-service
+
+# Check manager pod (should be running with webhooks enabled)
+kubectl get pods -n threat-scanning-system
+```
+
+## Configuration
+
+### Failure Policy
+
+Both validating and mutating webhooks use `failurePolicy: Fail`. This means:
+- If the webhook server is unavailable, API requests will be rejected
+- Ensures no invalid resources are created
+- For production, consider using `Ignore` policy for non-critical validations
+
+### Side Effects
+
+All webhooks declare `sideEffects: None`, indicating they:
+- Do not cause side effects beyond validation/mutation
+- Are safe to call multiple times with the same input
+- Do not modify external state
+
+### Admission Review Versions
+
+All webhooks support admission review version `v1`:
+```yaml
+admissionReviewVersions:
+  - v1
+```
+
+## Webhook Logic
+
+### Target Validations
+
+**CREATE**:
+- Validate credential fields based on type (NFS/ObjectStore)
+- Require explicit namespace for credential secret
+- Verify referenced resources exist (secrets, configmaps)
+- Enforce single available reporting target constraint
+- Validate URL format for non-cloud vendors
+
+**UPDATE**:
+- All CREATE validations apply
+- Block spec updates if target referenced by active scans
+- Prevent conversion to reporting target
+- Validate reporting target uniqueness
+
+**DELETE**:
+- Block deletion if referenced by active/queued scans
+
+### Target Mutations
+
+**CREATE**:
+- Set default vendor to "Other" for non-cloud ObjectStore
+- Set default `skipCertVerification` to false
+
+### ScanInstance Validations
+
+**CREATE**:
+- Validate backup path is not empty
+- Verify referenced target exists and is available
+- Check target has completed validation
+
+**UPDATE**:
+- Enforce spec immutability
+- Validate logical status transitions
+
+**DELETE**:
+- Allow deletion with warning if scan is in progress
+
+### ScanInstance Mutations
+
+**CREATE**:
+- Auto-populate `backupTarget.apiVersion`
+- Auto-populate `backupTarget.kind`
 
 ## Troubleshooting
 
-### Webhook not receiving requests
+### Webhook Not Responding
 
-Check if the webhook endpoint is reachable:
+**Symptoms**:
+- Timeout errors when creating resources
+- "connection refused" errors
 
+**Solutions**:
+1. Check manager pod is running:
+   ```bash
+   kubectl get pods -n threat-scanning-system
+   ```
+
+2. Check manager is started with webhooks enabled:
+   ```bash
+   kubectl logs -n threat-scanning-system <manager-pod> | grep webhook
+   ```
+
+3. Verify webhook service exists:
+   ```bash
+   kubectl get svc -n threat-scanning-system threat-scanning-webhook-service
+   ```
+
+### Certificate Errors
+
+**Symptoms**:
+- x509 certificate validation errors
+- TLS handshake failures
+
+**Solutions**:
+1. Verify CA bundle is set in webhook configurations:
+   ```bash
+   kubectl get validatingwebhookconfiguration \
+     threat-scanning-validating-webhook-configuration \
+     -o jsonpath='{.webhooks[0].clientConfig.caBundle}' | base64 -d | openssl x509 -text
+   ```
+
+2. Check certificate expiration:
+   ```bash
+   kubectl get secret threat-scanning-webhook-certs \
+     -n threat-scanning-system \
+     -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -enddate -noout
+   ```
+
+3. Regenerate certificates if expired:
+   ```bash
+   ../../hack/generate-webhook-certs.sh
+   # Then recreate the secret and update CA bundles
+   ```
+
+### Webhook Not Called
+
+**Symptoms**:
+- Resources created without validation
+- Mutations not applied
+
+**Solutions**:
+1. Check webhook configurations are registered:
+   ```bash
+   kubectl get validatingwebhookconfigurations | grep threat-scanning
+   kubectl get mutatingwebhookconfigurations | grep threat-scanning
+   ```
+
+2. Verify webhook rules match your resources:
+   ```bash
+   kubectl get validatingwebhookconfiguration \
+     threat-scanning-validating-webhook-configuration -o yaml
+   ```
+
+3. Check failure policy:
+   ```bash
+   kubectl get validatingwebhookconfiguration \
+     threat-scanning-validating-webhook-configuration \
+     -o jsonpath='{.webhooks[*].failurePolicy}'
+   ```
+
+## Security Considerations
+
+### TLS Certificates
+
+- **Development**: Use self-signed certificates generated by `hack/generate-webhook-certs.sh`
+- **Production**: Use cert-manager or your organization's PKI for certificate management
+
+### RBAC
+
+The webhook service account needs:
+- Read access to Secrets (to validate credential secrets)
+- Read access to ConfigMaps (to validate SSL cert configmaps)
+- Read access to Targets (for validation)
+- Read access to ScanInstances (for validation)
+
+### Network Policy
+
+Consider network policies to:
+- Allow API server to webhook service (port 9443)
+- Deny direct access to webhook from other pods
+
+## Monitoring
+
+### Metrics
+
+The webhook server exposes metrics at `/metrics`:
+- `webhook_validation_total`: Total validations performed
+- `webhook_validation_errors_total`: Total validation errors
+- `webhook_mutation_total`: Total mutations performed
+- `webhook_duration_seconds`: Webhook processing duration
+
+### Logging
+
+Webhook operations are logged with structured logging:
 ```bash
-kubectl run -it --rm debug --image=curlimages/curl --restart=Never -- \
-  curl -k https://threat-scanning-webhook-service.threat-scanning-system.svc.cluster.local:443/validate-threatscanning-trilio-io-v1-target
+kubectl logs -n threat-scanning-system <manager-pod> | grep webhook
 ```
 
-### Certificate issues
+## Testing
 
-Check certificate status:
+For comprehensive testing instructions, see:
+- `../../WEBHOOK_QUICK_TEST_GUIDE.md` - Quick test scenarios
+- `../../WEBHOOK_IMPLEMENTATION.md` - Full implementation details
 
+Quick test:
 ```bash
-kubectl get certificate -n threat-scanning-system
-kubectl describe certificate webhook-server-cert -n threat-scanning-system
-kubectl get secret webhook-server-cert -n threat-scanning-system
+# Test validation (should fail - no namespace)
+kubectl apply -f - <<EOF
+apiVersion: threatscanning.trilio.io/v1
+kind: Target
+metadata:
+  name: test-target
+spec:
+  type: ObjectStore
+  vendor: MinIO
+  targetType: TVK
+  objectStoreCredentials:
+    bucketName: test
+    credentialSecret:
+      name: test-secret
+      # namespace missing - should fail
+EOF
 ```
 
-Re-create certificates:
+## Additional Resources
 
-```bash
-kubectl delete certificate webhook-server-cert -n threat-scanning-system
-kubectl apply -f config/webhook/certificate.yaml
-```
+- **Implementation Guide**: `../../WEBHOOK_IMPLEMENTATION.md`
+- **Quick Test Guide**: `../../WEBHOOK_QUICK_TEST_GUIDE.md`
+- **Implementation Summary**: `../../WEBHOOK_IMPLEMENTATION_SUMMARY.md`
+- **Cert Generation Script**: `../../hack/generate-webhook-certs.sh`
 
-### Webhook validation failures
-
-Check webhook logs for errors:
-
-```bash
-kubectl logs -n threat-scanning-system -l app.kubernetes.io/name=threat-scanning --tail=100
-```
-
-Test with a sample target:
-
-```bash
-kubectl apply -f config/samples/threatscanning_v1_target_s3.yaml
-```
-
-### Image pull issues
-
-Ensure you're authenticated to GCR:
-
-```bash
-gcloud auth configure-docker eu.gcr.io
-```
-
-Or use a service account with appropriate permissions.
-
+## SupportFor issues or questions:
+1. Check the troubleshooting section above
+2. Review webhook logs
+3. Consult the implementation documentation
+4. Check Kubernetes admission webhook documentation

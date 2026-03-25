@@ -13,7 +13,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 
 from .base_handler import BaseTargetHandler
 from targetPoller.models.storage_state import StorageState
-from shared.backup_detection import TVOBackupDetector
 
 
 class TVOTargetHandler(BaseTargetHandler):
@@ -28,23 +27,6 @@ class TVOTargetHandler(BaseTargetHandler):
         super().__init__(target_cr, k8s_client, logger_instance)
         self.backup_type = 'TVO'
         self.logger.warning("TVO handler is not fully implemented")
-        # Initialize shared detector
-        self.detector = TVOBackupDetector(self.parsed_target, self.target_type, self.logger)
-    
-    def detect_backup_type(self) -> str:
-        """
-        Detect if this is a TVO backup target.
-        
-        Uses shared TVOBackupDetector for detection logic.
-        
-        NOTE: Not yet implemented.
-        
-        Returns:
-            'UNKNOWN' - TVO detection not implemented
-        """
-        self.logger.warning("TVO detection is not yet implemented")
-        # Use shared detector
-        return self.detector.detect()
     
     def populate_storage_state(self) -> StorageState:
         """

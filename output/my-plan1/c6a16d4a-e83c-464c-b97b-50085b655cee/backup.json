@@ -1,0 +1,105 @@
+{
+  "apiVersion": "triliovault.trilio.io/v1",
+  "kind": "Backup",
+  "metadata": {
+    "name": "backup-422c1782",
+    "namespace": "default",
+    "uid": "c6a16d4a-e83c-464c-b97b-50085b655cee",
+    "creationTimestamp": "2026-03-19T07:29:38.743360Z",
+    "ownerReferences": [
+      {
+        "apiVersion": "triliovault.trilio.io/v1",
+        "kind": "BackupPlan",
+        "name": "my-plan1",
+        "uid": "7f076def-5537-43c8-ba6c-b813e925afcd",
+        "controller": true,
+        "blockOwnerDeletion": true
+      }
+    ]
+  },
+  "spec": {
+    "type": "Full",
+    "backupPlan": {
+      "kind": "BackupPlan",
+      "namespace": "default",
+      "name": "my-plan1",
+      "uid": "7f076def-5537-43c8-ba6c-b813e925afcd",
+      "apiVersion": "triliovault.trilio.io/v1"
+    }
+  },
+  "status": {
+    "status": "Available",
+    "type": "Full",
+    "location": "my-plan1/c6a16d4a-e83c-464c-b97b-50085b655cee",
+    "scope": "App",
+    "applicationType": "Custom",
+    "startTimestamp": "2026-03-19T06:59:38.743364Z",
+    "completionTimestamp": "2026-03-19T07:29:38.743371Z",
+    "percentageCompletion": 100,
+    "size": "5Gi",
+    "hasKubevirtResources": true,
+    "snapshot": {
+      "custom": {
+        "dataSnapshots": [
+          {
+            "backupType": "Full",
+            "location": "my-plan1/c6a16d4a-e83c-464c-b97b-50085b655cee/custom/data-snapshot/vm-1-boot-disk",
+            "persistentVolumeClaimName": "vm-1-boot-disk",
+            "persistentVolumeClaimMetadata": "{\"apiVersion\": \"v1\", \"kind\": \"PersistentVolumeClaim\", \"metadata\": {\"name\": \"vm-1-boot-disk\"}}",
+            "persistentVolumeName": "pv-vm-1-boot-disk",
+            "persistentVolumeMetadata": "{\"apiVersion\": \"v1\", \"kind\": \"PersistentVolume\", \"metadata\": {\"name\": \"pv-vm-1-boot-disk\"}}",
+            "pvSize": "10Gi",
+            "snapshotSize": "5Gi",
+            "size": "5Gi",
+            "uploaded": true,
+            "conditions": [
+              {
+                "status": "Completed",
+                "timestamp": "2026-03-19T07:29:38.741527Z",
+                "phase": "DataSnapshot"
+              }
+            ],
+            "owner": {
+              "groupVersionKind": {
+                "group": "kubevirt.io",
+                "version": "v1",
+                "kind": "VirtualMachine"
+              },
+              "name": "vm-1"
+            }
+          },
+          {
+            "backupType": "Full",
+            "location": "my-plan1/c6a16d4a-e83c-464c-b97b-50085b655cee/custom/data-snapshot/vm-2-boot-disk",
+            "persistentVolumeClaimName": "vm-2-boot-disk",
+            "persistentVolumeClaimMetadata": "{\"apiVersion\": \"v1\", \"kind\": \"PersistentVolumeClaim\", \"metadata\": {\"name\": \"vm-2-boot-disk\"}}",
+            "persistentVolumeName": "pv-vm-2-boot-disk",
+            "persistentVolumeMetadata": "{\"apiVersion\": \"v1\", \"kind\": \"PersistentVolume\", \"metadata\": {\"name\": \"pv-vm-2-boot-disk\"}}",
+            "pvSize": "10Gi",
+            "snapshotSize": "5Gi",
+            "size": "5Gi",
+            "uploaded": true,
+            "conditions": [
+              {
+                "status": "Completed",
+                "timestamp": "2026-03-19T07:29:38.742510Z",
+                "phase": "DataSnapshot"
+              }
+            ],
+            "owner": {
+              "groupVersionKind": {
+                "group": "kubevirt.io",
+                "version": "v1",
+                "kind": "VirtualMachine"
+              },
+              "name": "vm-2"
+            }
+          }
+        ],
+        "metadataSnapshot": {
+          "location": "my-plan1/c6a16d4a-e83c-464c-b97b-50085b655cee/custom/metadata-snapshot"
+        }
+      }
+    }
+  }
+}

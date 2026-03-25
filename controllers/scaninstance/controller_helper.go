@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -112,88 +113,35 @@ func (r *Reconciler) cleanupScanInstanceResources(ctx context.Context, scanInsta
 		r.Log.Infof("Deleted scan configmap: %s", configMapName)
 	}
 
+	// Delete Redis deployment if exists
+	redisDeployName := helpers.GetScanInstanceResourceName(internal.ScanInstanceRedisDeployPrefix, scanInstance.Name)
+	redisDeploy := &appsv1.Deployment{}
+	if err := r.Client.Get(ctx, types.NamespacedName{
+		Namespace: internal.GetInstallNamespace(),
+		Name:      redisDeployName,
+	}, redisDeploy); err == nil {
+		backgroundPolicy := metav1.DeletePropagationBackground
+		if err := r.Client.Delete(ctx, redisDeploy, &client.DeleteOptions{PropagationPolicy: &backgroundPolicy}); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("error deleting redis deployment: %w", err)
+		}
+		r.Log.Infof("Deleted redis deployment: %s", redisDeployName)
+	}
+
+	// Delete Redis service if exists
+	redisSvcName := helpers.GetScanInstanceResourceName(internal.ScanInstanceRedisServicePrefix, scanInstance.Name)
+	redisSvc := &corev1.Service{}
+	if err := r.Client.Get(ctx, types.NamespacedName{
+		Namespace: internal.GetInstallNamespace(),
+		Name:      redisSvcName,
+	}, redisSvc); err == nil {
+		if err := r.Client.Delete(ctx, redisSvc); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("error deleting redis service: %w", err)
+		}
+		r.Log.Infof("Deleted redis service: %s", redisSvcName)
+	}
+
 	// TODO: Delete cleanup job for reports when implemented
 
-	return nil
-}
-
-// cleanupScanInstanceJobs cleans up all jobs associated with a completed ScanInstance
-// Following TVK pattern: jobs are deleted only when the main CR reaches terminal Completed state
-// Failed jobs are not cleaned up here - they are kept for debugging and cleaned during CR deletion
-func (r *Reconciler) cleanupScanInstanceJobs(ctx context.Context, scanInstance *v1.ScanInstance) error {
-	log := r.Log.WithField("scanInstance", scanInstance.Name)
-
-	jobsDeleted := 0
-	var errors []string
-
-	// Delete pre-scan job if exists and is completed successfully
-	preScanJobName := helpers.GetScanInstanceResourceName(internal.ScanInstancePreScanPrefix, scanInstance.Name)
-	preScanJob := &batchv1.Job{}
-	if err := r.Client.Get(ctx, types.NamespacedName{
-		Namespace: internal.GetInstallNamespace(),
-		Name:      preScanJobName,
-	}, preScanJob); err == nil {
-		// Use Foreground propagation to ensure pods are deleted before job
-		// Following TVK pattern: CleanupJobs uses DeletePropagationForeground
-		foregroundPolicy := metav1.DeletePropagationForeground
-		if err := r.Client.Delete(ctx, preScanJob, &client.DeleteOptions{PropagationPolicy: &foregroundPolicy}); err != nil {
-			if !apierrors.IsNotFound(err) {
-				errors = append(errors, fmt.Sprintf("error deleting pre-scan job: %v", err))
-			}
-		} else {
-			jobsDeleted++
-			log.Infof("Deleted pre-scan job: %s", preScanJobName)
-		}
-	} else if !apierrors.IsNotFound(err) {
-		errors = append(errors, fmt.Sprintf("error getting pre-scan job: %v", err))
-	}
-
-	// Delete scan job if exists
-	scanJobName := helpers.GetScanInstanceResourceName(internal.ScanInstanceScanJobPrefix, scanInstance.Name)
-	scanJob := &batchv1.Job{}
-	if err := r.Client.Get(ctx, types.NamespacedName{
-		Namespace: internal.GetInstallNamespace(),
-		Name:      scanJobName,
-	}, scanJob); err == nil {
-		foregroundPolicy := metav1.DeletePropagationForeground
-		if err := r.Client.Delete(ctx, scanJob, &client.DeleteOptions{PropagationPolicy: &foregroundPolicy}); err != nil {
-			if !apierrors.IsNotFound(err) {
-				errors = append(errors, fmt.Sprintf("error deleting scan job: %v", err))
-			}
-		} else {
-			jobsDeleted++
-			log.Infof("Deleted scan job: %s", scanJobName)
-		}
-	} else if !apierrors.IsNotFound(err) {
-		errors = append(errors, fmt.Sprintf("error getting scan job: %v", err))
-	}
-
-	// Delete scan configmap if exists
-	configMapName := helpers.GetScanInstanceResourceName(internal.ScanInstanceScanConfigPrefix, scanInstance.Name)
-	configMap := &corev1.ConfigMap{}
-	if err := r.Client.Get(ctx, types.NamespacedName{
-		Namespace: internal.GetInstallNamespace(),
-		Name:      configMapName,
-	}, configMap); err == nil {
-		if err := r.Client.Delete(ctx, configMap); err != nil {
-			if !apierrors.IsNotFound(err) {
-				errors = append(errors, fmt.Sprintf("error deleting scan configmap: %v", err))
-			}
-		} else {
-			jobsDeleted++
-			log.Infof("Deleted scan configmap: %s", configMapName)
-		}
-	} else if !apierrors.IsNotFound(err) {
-		errors = append(errors, fmt.Sprintf("error getting scan configmap: %v", err))
-	}
-
-	// TODO: Delete post-scan/cleanup jobs when implemented
-
-	if len(errors) > 0 {
-		return fmt.Errorf("cleanup errors: %v", errors)
-	}
-
-	log.Infof("Successfully cleaned up %d job(s) for completed ScanInstance", jobsDeleted)
 	return nil
 }
 
@@ -222,8 +170,14 @@ func (r *Reconciler) createPreScanJob(ctx context.Context, scanInstance *v1.Scan
 	backupUID := scanInstance.Spec.BackupRef.UID
 	backupPath := scanInstance.Spec.BackupRef.Path
 
-	// Create pre-scan job spec with extracted parameters
-	preScanJob, err := helpers.GetPreScanJob(ctx, r.Client, scanInstance, targetName, backupUID, backupPath)
+	// Fetch target to get backup type
+	target := &v1.Target{}
+	if err := r.Client.Get(ctx, types.NamespacedName{Name: targetName}, target); err != nil {
+		return nil, fmt.Errorf("error fetching target %s: %w", targetName, err)
+	}
+
+	// Create pre-scan job spec with target object (includes backup type)
+	preScanJob, err := helpers.GetPreScanJob(ctx, r.Client, scanInstance, target, backupUID, backupPath)
 	if err != nil {
 		return nil, fmt.Errorf("error creating pre-scan job spec: %w", err)
 	}
@@ -282,6 +236,13 @@ func (r *Reconciler) updateScanInstanceStatus(ctx context.Context, scanInstance,
 
 func (r *Reconciler) updateScanInstanceCondition(ctx context.Context, scanInstance, originalScanInstance *v1.ScanInstance,
 	phase v1.ScanPhase, status v1.Status, reason string) error {
+
+	// Check if this exact condition already exists to prevent duplicates
+	// This can happen if multiple reconciliations occur before the condition is persisted
+	if scanInstance.HasCondition(phase, status) {
+		// Condition already exists, no need to add again
+		return nil
+	}
 
 	condition := v1.ScanInstanceCondition{
 		Phase:     phase,
@@ -373,6 +334,117 @@ func (r *Reconciler) getScanJob(ctx context.Context, scanInstance *v1.ScanInstan
 	return scanJob, nil
 }
 
+// reconcileRedisDeployment handles the Redis deployment phase
+func (r *Reconciler) reconcileRedisDeployment(ctx context.Context, scanInstance, originalScanInstance *v1.ScanInstance) (ctrl.Result, error) {
+	log := r.Log.WithField("scanInstance", scanInstance.Name)
+
+	// Check if Redis deployment phase is already in progress or completed (idempotency)
+	if scanInstance.HasCondition(v1.RedisDeployment, v1.Ready) {
+		log.Debug("Redis deployment already ready, proceeding to scan phase")
+		return ctrl.Result{}, nil
+	}
+
+	// Check if Redis deployment phase has failed (terminal state for this phase)
+	if scanInstance.HasCondition(v1.RedisDeployment, v1.Failed) {
+		log.Info("Redis deployment has failed")
+		// Update overall status to failed if not already
+		if scanInstance.Status.Status != v1.ScanFailed {
+			if uErr := r.updateScanInstanceStatus(ctx, scanInstance, originalScanInstance, v1.ScanFailed); uErr != nil {
+				return ctrl.Result{}, uErr
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Update condition to RedisDeployment InProgress if not already set
+	if !scanInstance.HasCondition(v1.RedisDeployment, v1.InProgress) {
+		if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.RedisDeployment, v1.InProgress,
+			"Creating Redis deployment"); uErr != nil {
+			return ctrl.Result{}, uErr
+		}
+		log.Info("Updated condition to RedisDeployment InProgress")
+	}
+
+	// Get or create Redis deployment
+	redisDeploy, err := r.getRedisDeployment(ctx, scanInstance)
+	if err != nil {
+		r.Log.WithError(err).Error("error while getting Redis deployment")
+		return ctrl.Result{}, err
+	}
+
+	if redisDeploy == nil {
+		// Create Redis deployment
+		redisDeploy, err = r.createRedisDeployment(ctx, scanInstance)
+		if err != nil {
+			r.Log.WithError(err).Error("error occurred while creating Redis deployment")
+			if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.RedisDeployment, v1.Failed,
+				fmt.Sprintf("Failed to create Redis deployment: %v", err)); uErr != nil {
+				return ctrl.Result{}, uErr
+			}
+			if uErr := r.updateScanInstanceStatus(ctx, scanInstance, originalScanInstance, v1.ScanFailed); uErr != nil {
+				return ctrl.Result{}, uErr
+			}
+			return ctrl.Result{}, err
+		}
+
+		log.Infof("Created Redis deployment: %s", redisDeploy.Name)
+	}
+
+	// Get or create Redis service
+	redisSvc, err := r.getRedisService(ctx, scanInstance)
+	if err != nil {
+		r.Log.WithError(err).Error("error while getting Redis service")
+		return ctrl.Result{}, err
+	}
+
+	if redisSvc == nil {
+		// Create Redis service
+		redisSvc, err = r.createRedisService(ctx, scanInstance)
+		if err != nil {
+			r.Log.WithError(err).Error("error occurred while creating Redis service")
+			if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.RedisDeployment, v1.Failed,
+				fmt.Sprintf("Failed to create Redis service: %v", err)); uErr != nil {
+				return ctrl.Result{}, uErr
+			}
+			if uErr := r.updateScanInstanceStatus(ctx, scanInstance, originalScanInstance, v1.ScanFailed); uErr != nil {
+				return ctrl.Result{}, uErr
+			}
+			return ctrl.Result{}, err
+		}
+
+		log.Infof("Created Redis service: %s", redisSvc.Name)
+	}
+
+	// Check if Redis deployment is ready
+	if r.isRedisDeploymentReady(redisDeploy) {
+		// Update condition to RedisDeployment Ready
+		if !scanInstance.HasCondition(v1.RedisDeployment, v1.Ready) {
+			if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.RedisDeployment, v1.Ready,
+				"Redis deployment is ready"); uErr != nil {
+				return ctrl.Result{}, uErr
+			}
+
+			r.Recorder.Eventf(scanInstance, corev1.EventTypeNormal, "RedisDeploymentReady",
+				"Redis deployment is ready for ScanInstance: %s", scanInstance.Name)
+
+			log.Info("Redis deployment is ready, updated condition")
+
+			// Requeue immediately to proceed to scan job creation
+			// We need explicit requeue here because deployment watcher won't fire again
+			// (deployment is already ready and won't have further status changes)
+			return ctrl.Result{Requeue: true}, nil
+		}
+
+		// Condition already exists, proceed
+		return ctrl.Result{}, nil
+	}
+
+	// Redis deployment not ready yet
+	// Don't requeue - deployment watcher will trigger reconciliation when deployment status changes
+	log.Debug("Redis deployment not ready yet, waiting for deployment watcher to trigger reconciliation")
+	return ctrl.Result{}, nil
+}
+
 // processScanJobStatus processes the status of the scan job and updates ScanInstance accordingly
 func (r *Reconciler) processScanJobStatus(ctx context.Context, scanInstance, originalScanInstance *v1.ScanInstance, scanJob *batchv1.Job) (ctrl.Result, error) {
 	log := r.Log.WithField("scanInstance", scanInstance.Name).WithField("scanJob", scanJob.Name)
@@ -385,11 +457,6 @@ func (r *Reconciler) processScanJobStatus(ctx context.Context, scanInstance, ori
 		// Scan completed successfully
 		// Check idempotency - only update if condition doesn't exist
 		if !scanInstance.HasCondition(v1.Scanning, v1.Completed) {
-			if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.Scanning, v1.Completed,
-				"Scan completed successfully"); uErr != nil {
-				return ctrl.Result{}, uErr
-			}
-
 			r.Recorder.Eventf(scanInstance, corev1.EventTypeNormal, "ScanCompleted",
 				"Scan completed successfully for ScanInstance: %s", scanInstance.Name)
 
@@ -398,7 +465,20 @@ func (r *Reconciler) processScanJobStatus(ctx context.Context, scanInstance, ori
 				return ctrl.Result{}, uErr
 			}
 
-			log.Info("Scan completed successfully, ScanInstance marked as completed")
+			log.Infof("Scan completed successfully, ScanInstance marked as completed")
+
+			// Add Scanning/Completed condition
+			if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.Scanning, v1.Completed,
+				"Scan completed successfully"); uErr != nil {
+				return ctrl.Result{}, uErr
+			}
+
+			// Trigger janitor job to cleanup resources
+			if err := r.createJanitorJob(ctx, scanInstance); err != nil {
+				log.WithError(err).Warn("Failed to create janitor job, resources will be cleaned up when ScanInstance is deleted")
+			} else {
+				log.Info("Janitor job created successfully for cleanup")
+			}
 		}
 
 	case v1.Failed:
@@ -495,6 +575,12 @@ func (r *Reconciler) reconcileScanPhase(ctx context.Context, scanInstance, origi
 			return ctrl.Result{}, nil
 		}
 
+		// Check if Redis deployment phase is completed (idempotency)
+		if !scanInstance.HasCondition(v1.RedisDeployment, v1.Ready) {
+			return r.reconcileRedisDeployment(ctx, scanInstance, originalScanInstance)
+		}
+
+		// Redis is ready, proceed to create configmap and scan job
 		// Create scan configmap
 		scanConfigMap, err := helpers.GetScanConfigMap(scanInstance)
 		if err != nil {
@@ -561,6 +647,19 @@ func (r *Reconciler) reconcileScanPhase(ctx context.Context, scanInstance, origi
 		return ctrl.Result{}, nil
 	}
 
+	// Check if Scanning phase is already completed (idempotency check)
+	// CRITICAL: Check this BEFORE checking if job exists, since completed jobs are cleaned up
+	if scanInstance.HasCondition(v1.Scanning, v1.Completed) {
+		log.Debug("Scanning phase already completed, no further action needed")
+		return ctrl.Result{}, nil
+	}
+
+	// Check if Scanning phase has failed (terminal state)
+	if scanInstance.HasCondition(v1.Scanning, v1.Failed) {
+		log.Info("Scanning phase has failed, ScanInstance is in terminal state")
+		return ctrl.Result{}, nil
+	}
+
 	// If already in Scanning phase, check scan job status
 	scanJob, err := r.getScanJob(ctx, scanInstance)
 	if err != nil {
@@ -571,19 +670,63 @@ func (r *Reconciler) reconcileScanPhase(ctx context.Context, scanInstance, origi
 	if scanJob == nil {
 		// Scan job doesn't exist but should - this is an error state
 		// Could happen if job was manually deleted
+		// This should only happen if we're in Scanning/InProgress but job is missing
 		log.Info("Scan job not found, marking as failed")
-		if !scanInstance.HasCondition(v1.Scanning, v1.Failed) {
-			if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.Scanning, v1.Failed,
-				"Scan job not found"); uErr != nil {
-				return ctrl.Result{}, uErr
-			}
-			if uErr := r.updateScanInstanceStatus(ctx, scanInstance, originalScanInstance, v1.ScanFailed); uErr != nil {
-				return ctrl.Result{}, uErr
-			}
+		if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.Scanning, v1.Failed,
+			"Scan job not found"); uErr != nil {
+			return ctrl.Result{}, uErr
+		}
+		if uErr := r.updateScanInstanceStatus(ctx, scanInstance, originalScanInstance, v1.ScanFailed); uErr != nil {
+			return ctrl.Result{}, uErr
 		}
 		return ctrl.Result{}, nil
 	}
 
 	// Process scan job status
 	return r.processScanJobStatus(ctx, scanInstance, originalScanInstance, scanJob)
+}
+
+// createJanitorJob creates a janitor job to cleanup ScanInstance resources after scan completes
+func (r *Reconciler) createJanitorJob(ctx context.Context, scanInstance *v1.ScanInstance) error {
+	log := r.Log.WithField("scanInstance", scanInstance.Name)
+
+	// Check if janitor job already exists (idempotency)
+	janitorJobName := helpers.GetScanInstanceResourceName(internal.ScanInstanceJanitorJobPrefix, scanInstance.Name)
+	existingJob := &batchv1.Job{}
+	if err := r.Client.Get(ctx, types.NamespacedName{
+		Namespace: internal.GetInstallNamespace(),
+		Name:      janitorJobName,
+	}, existingJob); err == nil {
+		log.Debug("Janitor job already exists")
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("error checking for existing janitor job: %w", err)
+	}
+
+	// Create janitor job spec
+	janitorJob, err := helpers.GetJanitorJob(scanInstance)
+	if err != nil {
+		return fmt.Errorf("error creating janitor job spec: %w", err)
+	}
+
+	// Set owner reference - janitor job is owned by ScanInstance
+	// This ensures janitor job is cleaned up when ScanInstance is deleted
+	if err := ctrl.SetControllerReference(scanInstance, janitorJob, r.Scheme); err != nil {
+		return fmt.Errorf("error setting owner reference on janitor job: %w", err)
+	}
+
+	// Create the janitor job
+	if err := r.Client.Create(ctx, janitorJob); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			log.Debug("Janitor job already exists (race condition)")
+			return nil
+		}
+		return fmt.Errorf("error creating janitor job: %w", err)
+	}
+
+	r.Recorder.Eventf(scanInstance, corev1.EventTypeNormal, "JanitorJobCreated",
+		"Janitor job %s created for cleanup of ScanInstance: %s", janitorJob.Name, scanInstance.Name)
+
+	log.Infof("Created janitor job: %s", janitorJob.Name)
+	return nil
 }
