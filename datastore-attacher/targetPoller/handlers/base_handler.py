@@ -29,7 +29,7 @@ logging = logger.logger
 TRILIODATA_MOUNT_PATH = '/triliodata'
 
 # Ignore backups updated within last 5 minutes (might still be in progress)
-IGNORE_RECENT_UPDATES_MINUTES = 5
+IGNORE_RECENT_UPDATES_MINUTES = os.getenv('IGNORE_RECENT_UPDATES_MINUTES', 5)
 
 
 class BaseTargetHandler(ABC):

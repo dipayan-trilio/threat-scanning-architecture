@@ -192,6 +192,9 @@ class TVKBackupDetector(BaseBackupDetector):
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON in backup.json: {str(e)}")
         
+        # Extract backup creation timestamp from metadata
+        backup_creation_timestamp = backup_json.get('metadata', {}).get('creationTimestamp', '')
+        
         # Parse path structure
         path_parts = backup_path.rstrip('/').split('/')
         if len(path_parts) < 2:
@@ -253,10 +256,15 @@ class TVKBackupDetector(BaseBackupDetector):
         # Annotation based on final scan_locations length
         is_vm_workload = len(scan_locations) > 0
         
+        # Extract backup plan name from backup.json spec
+        backupplan_name = backup_json.get('spec', {}).get('backupPlan', '')
+        
         return {
             'instance_id': instance_id,
             'backupplan_uid': backupplan_uid,
+            'backupplan_name': backupplan_name,
             'backup_uid': extracted_backup_uid,
+            'backup_creation_timestamp': backup_creation_timestamp,
             'is_vm_workload': is_vm_workload,
             'is_cluster_backup': False,
             'scan_locations': scan_locations
@@ -286,6 +294,9 @@ class TVKBackupDetector(BaseBackupDetector):
                 cluster_backup_json = json.load(f)
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON in cluster-backup.json: {str(e)}")
+        
+        # Extract cluster backup creation timestamp from metadata
+        backup_creation_timestamp = cluster_backup_json.get('metadata', {}).get('creationTimestamp', '')
         
         # Read tvk-meta.json
         tvk_meta_path = os.path.join(backup_path, 'tvk-meta.json')
@@ -417,10 +428,15 @@ class TVKBackupDetector(BaseBackupDetector):
                 "✓ Cluster-backup has NO VM workloads to scan (all children filtered out)"
             )
         
+        # Extract backup plan name from cluster-backup.json spec
+        backupplan_name = cluster_backup_json.get('spec', {}).get('clusterBackupPlan', '')
+        
         return {
             'instance_id': instance_id,
             'backupplan_uid': backupplan_uid,
+            'backupplan_name': backupplan_name,
             'backup_uid': extracted_backup_uid,
+            'backup_creation_timestamp': backup_creation_timestamp,
             'is_vm_workload': is_vm_workload,
             'is_cluster_backup': True,
             'scan_locations': scan_locations

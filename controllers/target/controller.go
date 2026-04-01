@@ -37,10 +37,12 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=threatscanning.trilio.io,resources=targets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=threatscanning.trilio.io,resources=targets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile will be executed on every change for Target API resource

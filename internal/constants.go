@@ -1,6 +1,9 @@
 package internal
 
-import "os"
+import (
+	"fmt"
+	"os"
+)
 
 const (
 	// TargetValidationPrefix is the prefix for target validation resources
@@ -48,6 +51,9 @@ const (
 	// ScanInstanceJanitorJobPrefix is the prefix for janitor job resources
 	ScanInstanceJanitorJobPrefix = "threat-scan-janitor"
 
+	// ScanInstanceScanSecretPrefix is the prefix for scan secret
+	ScanInstanceScanSecretPrefix = "scan-secret"
+
 	// ScanInstanceNameLabel is the label key for scan instance name
 	ScanInstanceNameLabel = "trilio.io/scaninstance-name"
 
@@ -56,6 +62,15 @@ const (
 
 	// ScanErrorAnnotation is the annotation key for scan job error messages
 	ScanErrorAnnotation = "threatscanning.trilio.io/scan-error"
+
+	// BackupCreationTimestampAnnotation is the annotation key for backup creation timestamp
+	BackupCreationTimestampAnnotation = "trilio.io/backup-creation-timestamp"
+
+	// ScanInstance label keys (set by prescan)
+	InstanceIDLabel   = "trilio.io/instance-id"
+	BackupTargetLabel = "trilio.io/backup-target"
+	BackupPlanLabel   = "trilio.io/backupplan"
+	BackupLabel       = "trilio.io/backup"
 
 	// Operation annotation key
 	Operation = "trilio.io/operation"
@@ -99,6 +114,12 @@ const (
 	// JobPendingDeadlineSeconds is the default deadline for pending jobs
 	JobPendingDeadlineSeconds = 900
 
+	// ScanJobTimeoutEnvVar is the environment variable name for scan job timeout in seconds
+	ScanJobTimeoutEnvVar = "SCAN_JOB_TIMEOUT_SECONDS"
+
+	// DefaultScanJobTimeoutSeconds is the default timeout for scan jobs (25 minutes)
+	DefaultScanJobTimeoutSeconds = 1500
+
 	// SecretKeyName is the key name for secret key in credential secret
 	SecretKeyName = "secretKey"
 
@@ -137,6 +158,17 @@ const (
 
 	// DatabaseURL is the environment variable name for database URL
 	DatabaseURL = "DATABASE_URL"
+
+	// PostgreSQL environment variables for scan jobs
+	PostgresHost              = "POSTGRES_HOST"
+	PostgresPort              = "POSTGRES_PORT"
+	PostgresUser              = "POSTGRES_USER"
+	PostgresPassword          = "POSTGRES_PASSWORD"
+	PostgresDashboardDatabase = "POSTGRES_DASHBOARD_DATABASE"
+	PostgresCacheDatabase     = "POSTGRES_CACHE_DATABASE"
+
+	// DefaultPostgresPort is the default PostgreSQL port
+	DefaultPostgresPort = "5432"
 
 	// TargetPollingCron is the environment variable name for target polling cron schedule
 	TargetPollingCron = "TARGET_POLLING_CRON"
@@ -213,6 +245,39 @@ func GetDatabaseURL() string {
 	return DefaultDatabaseURL
 }
 
+// GetPostgresHost returns the PostgreSQL host from environment variable
+func GetPostgresHost() string {
+	return os.Getenv(PostgresHost)
+}
+
+// GetPostgresPort returns the PostgreSQL port from environment variable or default
+func GetPostgresPort() string {
+	if port := os.Getenv(PostgresPort); port != "" {
+		return port
+	}
+	return DefaultPostgresPort
+}
+
+// GetPostgresUser returns the PostgreSQL user from environment variable
+func GetPostgresUser() string {
+	return os.Getenv(PostgresUser)
+}
+
+// GetPostgresPassword returns the PostgreSQL password from environment variable
+func GetPostgresPassword() string {
+	return os.Getenv(PostgresPassword)
+}
+
+// GetPostgresDashboardDatabase returns the PostgreSQL dashboard database from environment variable
+func GetPostgresDashboardDatabase() string {
+	return os.Getenv(PostgresDashboardDatabase)
+}
+
+// GetPostgresCacheDatabase returns the PostgreSQL cache database from environment variable
+func GetPostgresCacheDatabase() string {
+	return os.Getenv(PostgresCacheDatabase)
+}
+
 // GetTargetPollingCron returns the target polling cron schedule from environment variable or default
 // Validates the cron expression and returns default if invalid
 func GetTargetPollingCron(logger interface {
@@ -273,6 +338,18 @@ func splitCronFields(expr string) []string {
 func IsTargetPollingDisabled() bool {
 	disabled := os.Getenv(TargetPollingDisabled)
 	return disabled == "true" || disabled == "True" || disabled == "TRUE" || disabled == "1"
+}
+
+// GetScanJobTimeoutSeconds returns the scan job timeout in seconds from environment variable or default
+func GetScanJobTimeoutSeconds() int64 {
+	if timeoutStr := os.Getenv(ScanJobTimeoutEnvVar); timeoutStr != "" {
+		// Parse the timeout value
+		var timeout int64
+		if _, err := fmt.Sscanf(timeoutStr, "%d", &timeout); err == nil && timeout > 0 {
+			return timeout
+		}
+	}
+	return DefaultScanJobTimeoutSeconds
 }
 
 // GetRecommendedLabels returns the recommended labels

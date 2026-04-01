@@ -295,7 +295,8 @@ func getValidatorImage() string {
 
 // GetJobStatus returns the status of a job based on job conditions
 func GetJobStatus(job *batchv1.Job) v1.Status {
-	// Check job conditions first for more accurate status
+	// Check job conditions first for most accurate status
+	// Job conditions are set by Kubernetes when the job reaches a terminal state
 	for _, condition := range job.Status.Conditions {
 		if condition.Type == batchv1.JobComplete && condition.Status == corev1.ConditionTrue {
 			return v1.Completed
@@ -306,15 +307,24 @@ func GetJobStatus(job *batchv1.Job) v1.Status {
 	}
 
 	// Fall back to job status counters
+	// IMPORTANT: job.Status.Failed counts failed pod attempts, not job failure
+	// A job is only considered failed when it exhausts all retries (backoffLimit)
+	// Kubernetes sets the JobFailed condition when backoffLimit is reached
 	if job.Status.Succeeded > 0 {
 		return v1.Completed
 	}
-	if job.Status.Failed > 0 {
-		return v1.Failed
-	}
+	
+	// Job is still in progress if it has active pods or failed attempts below backoff limit
 	if job.Status.Active > 0 {
 		return v1.InProgress
 	}
+	
+	// If there are failed attempts but no Active condition or Failed condition,
+	// the job is likely retrying (between attempts)
+	if job.Status.Failed > 0 {
+		return v1.InProgress
+	}
+	
 	return v1.InProgress
 }
 
@@ -383,7 +393,8 @@ func GetJobStatusWithPodCheck(ctx context.Context, cl client.Client, job *batchv
 // IsJobPendingDeadlineExceeded checks if the job has exceeded the pending deadline
 // This should only return true if the job is stuck in Pending state (not starting),
 // not if the job is actively running (which is expected for sleep 60)
-func IsJobPendingDeadlineExceeded(job *batchv1.Job) bool {
+// timeoutSeconds: the timeout duration in seconds (use 0 for default JobPendingDeadlineSeconds)
+func IsJobPendingDeadlineExceeded(job *batchv1.Job, timeoutSeconds int64) bool {
 	if job.Status.StartTime == nil {
 		return false
 	}
@@ -398,9 +409,14 @@ func IsJobPendingDeadlineExceeded(job *batchv1.Job) bool {
 		return false
 	}
 
+	// Use default timeout if not specified
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = internal.JobPendingDeadlineSeconds
+	}
+
 	// Only check deadline if job has been created but has no active pods
 	// (meaning it's stuck in pending/scheduling phase)
-	deadline := job.Status.StartTime.Time.Add(time.Duration(internal.JobPendingDeadlineSeconds) * time.Second)
+	deadline := job.Status.StartTime.Time.Add(time.Duration(timeoutSeconds) * time.Second)
 	return metav1.Now().After(deadline)
 }
 
@@ -736,7 +752,7 @@ func GetScanInstanceResourceAnnotations(scanInstanceName string) map[string]stri
 // GetScanConfigMapData generates the configmap data for scan job from scanLocations
 // The format matches the enhanced-soc-analysis requirement with complete VM artifact structure
 // Currently filters to scan only the boot disk (first PVC path) per VM
-func GetScanConfigMapData(scanLocations []v1.ScanLocation) (map[string]string, error) {
+func GetScanConfigMapData(scanLocations []v1.ScanLocation, backupMetadata map[string]string) (map[string]string, error) {
 	// Build the vm_artifacts structure
 	vmArtifacts := make(map[string]interface{})
 
@@ -786,9 +802,36 @@ func GetScanConfigMapData(scanLocations []v1.ScanLocation) (map[string]string, e
 		}
 	}
 
-	// Marshal to JSON
+	// Build the complete config structure with vm_collection_metadata
 	data := map[string]interface{}{
 		"vm_artifacts": vmArtifacts,
+	}
+
+	// Add vm_collection_metadata if backup metadata is provided
+	if backupMetadata != nil && len(backupMetadata) > 0 {
+		vmCollectionMetadata := make(map[string]string)
+		if instanceID, ok := backupMetadata["instance_id"]; ok && instanceID != "" {
+			vmCollectionMetadata["instance_id"] = instanceID
+		}
+		if backupUID, ok := backupMetadata["backup_uid"]; ok && backupUID != "" {
+			vmCollectionMetadata["backup_uid"] = backupUID
+		}
+		if targetName, ok := backupMetadata["backup_target_name"]; ok && targetName != "" {
+			vmCollectionMetadata["backup_target_name"] = targetName
+		}
+		if planUID, ok := backupMetadata["backupplan_uid"]; ok && planUID != "" {
+			vmCollectionMetadata["backupplan_uid"] = planUID
+		}
+		if timestamp, ok := backupMetadata["backup_timestamp"]; ok && timestamp != "" {
+			vmCollectionMetadata["backup_timestamp"] = timestamp
+		}
+
+		// Add to data structure if any metadata present
+		if len(vmCollectionMetadata) > 0 {
+			data["vm_collection_metadata"] = map[string]interface{}{
+				"backup-metadata": vmCollectionMetadata,
+			}
+		}
 	}
 
 	jsonData, err := json.MarshalIndent(data, "", "  ")
@@ -806,8 +849,34 @@ func GetScanConfigMapData(scanLocations []v1.ScanLocation) (map[string]string, e
 func GetScanConfigMap(scanInstance *v1.ScanInstance) (*corev1.ConfigMap, error) {
 	configMapName := GetScanInstanceResourceName(internal.ScanInstanceScanConfigPrefix, scanInstance.Name)
 
-	// Generate configmap data from scanLocations
-	data, err := GetScanConfigMapData(scanInstance.Status.ScanLocations)
+	// Extract backup metadata from ScanInstance labels and annotations
+	backupMetadata := make(map[string]string)
+
+	// Read from labels (set by prescan)
+	if scanInstance.Labels != nil {
+		if instanceID := scanInstance.Labels[internal.InstanceIDLabel]; instanceID != "" {
+			backupMetadata["instance_id"] = instanceID
+		}
+		if backupUID := scanInstance.Labels[internal.BackupLabel]; backupUID != "" {
+			backupMetadata["backup_uid"] = backupUID
+		}
+		if targetName := scanInstance.Labels[internal.BackupTargetLabel]; targetName != "" {
+			backupMetadata["backup_target_name"] = targetName
+		}
+		if planUID := scanInstance.Labels[internal.BackupPlanLabel]; planUID != "" {
+			backupMetadata["backupplan_uid"] = planUID
+		}
+	}
+
+	// Read backup creation timestamp from annotations
+	if scanInstance.Annotations != nil {
+		if timestamp := scanInstance.Annotations[internal.BackupCreationTimestampAnnotation]; timestamp != "" {
+			backupMetadata["backup_timestamp"] = timestamp
+		}
+	}
+
+	// Generate configmap data from scanLocations with backup metadata
+	data, err := GetScanConfigMapData(scanInstance.Status.ScanLocations, backupMetadata)
 	if err != nil {
 		return nil, err
 	}
@@ -829,8 +898,53 @@ func GetScanConfigMap(scanInstance *v1.ScanInstance) (*corev1.ConfigMap, error) 
 	return configMap, nil
 }
 
+// GetScanSecret creates a secret with PostgreSQL database credentials for scan job
+func GetScanSecret(scanInstance *v1.ScanInstance) (*corev1.Secret, error) {
+	secretName := GetScanInstanceResourceName(internal.ScanInstanceScanSecretPrefix, scanInstance.Name)
+
+	// Get PostgreSQL configuration from environment
+	pgHost := internal.GetPostgresHost()
+	pgPort := internal.GetPostgresPort()
+	pgUser := internal.GetPostgresUser()
+	pgPassword := internal.GetPostgresPassword()
+	pgDashboardDB := internal.GetPostgresDashboardDatabase()
+	pgCacheDB := internal.GetPostgresCacheDatabase()
+
+	// Build DATABASE_URL for cache database
+	// Format: postgresql+asyncpg://user:password@host:port/database
+	databaseURL := fmt.Sprintf("postgresql+asyncpg://%s:%s@%s:%s/%s",
+		pgUser, pgPassword, pgHost, pgPort, pgCacheDB)
+
+	// Create secret data
+	secretData := map[string]string{
+		"DATABASE_URL": databaseURL,
+		"PG_HOST":      pgHost,
+		"PG_PORT":      pgPort,
+		"PG_DB":        pgDashboardDB,
+		"PG_PASSWORD":  pgPassword,
+		"PG_USER":      pgUser,
+	}
+
+	// Get centralized labels and annotations
+	labels := GetScanInstanceResourceLabels(scanInstance.Name, "scan-secret")
+	annotations := GetScanInstanceResourceAnnotations(scanInstance.Name)
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        secretName,
+			Namespace:   internal.GetInstallNamespace(),
+			Labels:      labels,
+			Annotations: annotations,
+		},
+		StringData: secretData,
+		Type:       corev1.SecretTypeOpaque,
+	}
+
+	return secret, nil
+}
+
 // GetScanJob creates a job spec for scanning VM disk images
-func GetScanJob(ctx context.Context, cl client.Client, scanInstance *v1.ScanInstance) (*batchv1.Job, error) {
+func GetScanJob(ctx context.Context, cl client.Client, scanInstance *v1.ScanInstance, secretName string) (*batchv1.Job, error) {
 	scanInstName := scanInstance.Name
 	targetName := scanInstance.Spec.BackupTarget.Name
 	configMapName := GetScanInstanceResourceName(internal.ScanInstanceScanConfigPrefix, scanInstName)
@@ -849,6 +963,12 @@ func GetScanJob(ctx context.Context, cl client.Client, scanInstance *v1.ScanInst
 
 	credentialHash := target.GetAnnotations()[internal.TargetCredentialsHashAnnotationKey]
 
+	// Find reporting target (cluster-wide, single target with annotation)
+	reportingTargetName, err := getReportingTargetName(ctx, cl)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get reporting target: %w", err)
+	}
+
 	var (
 		scanCmd      string
 		volumes      []corev1.Volume
@@ -864,28 +984,40 @@ func GetScanJob(ctx context.Context, cl client.Client, scanInstance *v1.ScanInst
 	// Build scan engine command
 	// The configmap will be mounted at /config/vm_artifacts_configuration.json
 	// minimal_working.json is at /app/config/minimal_working.json
-	scanEngineCmd := "python3 /app/main.py multi-vm /app/config/minimal_working.json /config/vm_artifacts_configuration.json"
-	// scanEngineCmd := "sleep 5"
+	scanEngineCmd := "python3 /app/main.py multi-vm /app/config/minimal_working.json /config/vm_artifacts_configuration.json --campaign-name \"TestReport 9\" --enable-dashboard-report"
 
 	// Add --production flag only if PRODUCTION env is "true"
 	if strings.ToLower(productionMode) == "true" {
 		scanEngineCmd = scanEngineCmd + " --production"
 	}
 
+	// Build database setup command
+	// Runs after scan completes to populate PostgreSQL database from reports
+	dbSetupCmd := "/usr/local/bin/soc-db-setup --dir dashboard_reports"
+
+	// Build report upload command
+	// Upload happens only if scan succeeds (&&)
+	// Report uploader uses API-only access (no datastore mount needed)
+	reportUploadCmd := buildReportUploadCommand(scanInstance, reportingTargetName)
+
+	// Combine: scan → database setup → upload reports (all only on previous success)
+	fullScanCmd := fmt.Sprintf("%s && %s && %s", scanEngineCmd, dbSetupCmd, reportUploadCmd)
+	// fullScanCmd = "sleep 5"
+
 	// For NFS targets: PVC is already mounted at /triliodata, no need for mount command
 	// For ObjectStore targets: need to mount via s3fuse first
 	if target.IsNFSTarget() {
-		scanCmd = scanEngineCmd
+		scanCmd = fullScanCmd
 		nfsVolumes, nfsVolumeMounts := getNFSVolumes(target, credentialHash)
 		volumes = append(volumes, nfsVolumes...)
 		volumeMounts = append(volumeMounts, nfsVolumeMounts...)
 	} else {
-		// ObjectStore: mount first, then run scan engine
+		// ObjectStore: mount first, then run scan engine with report upload
 		mountCmd := fmt.Sprintf("%s %s --target-name=%s --group=threatscanning.trilio.io --version=v1",
 			internal.Py3Path,
 			fmt.Sprintf("%s/%s", internal.BasePath, internal.DatastoreMountUtil),
 			targetName)
-		scanCmd = fmt.Sprintf("%s && %s", mountCmd, scanEngineCmd)
+		scanCmd = fmt.Sprintf("%s && %s", mountCmd, fullScanCmd)
 	}
 
 	// Add scan config volume (always needed)
@@ -928,6 +1060,16 @@ func GetScanJob(ctx context.Context, cl client.Client, scanInstance *v1.ScanInst
 			RunAsUser: &runAsUser,
 		},
 		VolumeMounts: volumeMounts,
+		// Environment variables loaded from scan secret via envFrom
+		EnvFrom: []corev1.EnvFromSource{
+			{
+				SecretRef: &corev1.SecretEnvSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: secretName,
+					},
+				},
+			},
+		},
 		Env: []corev1.EnvVar{
 			// JOB_NAME and JOB_NAMESPACE for error annotation updates (future use)
 			{
@@ -956,11 +1098,6 @@ func GetScanJob(ctx context.Context, cl client.Client, scanInstance *v1.ScanInst
 			{
 				Name:  "REDIS_URL",
 				Value: redisURL,
-			},
-			// Database URL from controller environment (PostgreSQL or SQLite)
-			{
-				Name:  "DATABASE_URL",
-				Value: internal.GetDatabaseURL(),
 			},
 		},
 		Resources: corev1.ResourceRequirements{
@@ -1030,6 +1167,67 @@ func getScannerImage() string {
 		return img
 	}
 	return internal.DefaultScannerImage
+}
+
+// getReportingTargetName finds and returns the cluster-wide reporting target name
+// Returns error if no reporting target is found or multiple are found
+func getReportingTargetName(ctx context.Context, cl client.Client) (string, error) {
+	// List all targets
+	targets := &v1.TargetList{}
+	if err := cl.List(ctx, targets); err != nil {
+		return "", fmt.Errorf("failed to list targets: %w", err)
+	}
+
+	// Find targets with reporting annotation
+	var reportingTargets []string
+	for i := range targets.Items {
+		target := &targets.Items[i]
+		if target.IsReportingTarget() {
+			reportingTargets = append(reportingTargets, target.Name)
+		}
+	}
+
+	// Validate exactly one reporting target exists
+	if len(reportingTargets) == 0 {
+		return "", fmt.Errorf("no reporting target found (target with annotation trilio.io/reporting-target=true)")
+	}
+	if len(reportingTargets) > 1 {
+		return "", fmt.Errorf("multiple reporting targets found: %v (expected exactly one)", reportingTargets)
+	}
+
+	return reportingTargets[0], nil
+}
+
+// GetReportPath constructs and returns the report path (object prefix) for a ScanInstance
+// This is the S3 path where reports are uploaded
+// Format: reports/<instance-id>/<backup-target-name>/<backupplan-uid>/<backup-uid>/<timestamp>
+func GetReportPath(scanInstance *v1.ScanInstance) string {
+	return fmt.Sprintf("reports/%s/%s/%s/%s/%s",
+		scanInstance.GetInstanceID(),
+		scanInstance.GetBackupTargetName(),
+		scanInstance.GetBackupPlanUID(),
+		scanInstance.GetBackupUID(),
+		scanInstance.CreationTimestamp.Format("2006-01-02T15-04-05"),
+	)
+}
+
+// buildReportUploadCommand constructs the report uploader CLI command
+// Report uploader runs after scan completes successfully (via &&)
+// Uses API-only access to reporting target (no datastore mount needed)
+func buildReportUploadCommand(scanInstance *v1.ScanInstance, reportingTargetName string) string {
+	// Get object prefix path from helper function
+	objectPrefix := GetReportPath(scanInstance)
+
+	// Build report uploader command
+	// Format: /usr/local/bin/report-uploader \
+	//           --upload-directory dashboard_reports/ \
+	//           --object-prefix <prefix> \
+	//           --target-name <reporting-target-name>
+	return fmt.Sprintf(
+		"/usr/local/bin/report-uploader --upload-directory dashboard_reports/ --object-prefix %s --target-name %s",
+		objectPrefix,
+		reportingTargetName,
+	)
 }
 
 // GetJanitorJob creates a job spec for cleaning up ScanInstance resources

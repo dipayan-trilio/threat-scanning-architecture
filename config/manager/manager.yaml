@@ -37,6 +37,21 @@ spec:
         - --leader-elect
         image: controller:latest
         name: manager
+        env:
+        - name: SCAN_JOB_TIMEOUT_SECONDS
+          value: "1500"
+        - name: POSTGRES_HOST
+          value: "postgres-service.threat-scanning-system.svc.cluster.local"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_USER
+          value: "postgres"
+        - name: POSTGRES_PASSWORD
+          value: "postgres123"
+        - name: POSTGRES_DASHBOARD_DATABASE
+          value: "soc_dashboard"
+        - name: POSTGRES_CACHE_DATABASE
+          value: "soc_cache"
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

@@ -83,6 +83,7 @@ def main():
         instance_id = metadata['instance_id']
         backupplan_uid = metadata['backupplan_uid']
         backup_uid = metadata['backup_uid']
+        backup_creation_timestamp = metadata.get('backup_creation_timestamp', '')
         is_vm_workload = metadata['is_vm_workload']
         is_cluster_backup = metadata.get('is_cluster_backup', False)
         scan_locations = metadata.get('scan_locations', [])
@@ -113,7 +114,8 @@ def main():
         # Annotation: vm-workload based on final scan_locations length
         annotations = {
             'trilio.io/vm-workload': str(is_vm_workload).lower(),
-            'trilio.io/cluster-backup': str(is_cluster_backup).lower()
+            'trilio.io/cluster-backup': str(is_cluster_backup).lower(),
+            'trilio.io/backup-creation-timestamp': backup_creation_timestamp
         }
         
         # Convert scan_locations to camelCase for Kubernetes API

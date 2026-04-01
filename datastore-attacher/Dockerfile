@@ -92,5 +92,9 @@ RUN echo '#!/bin/bash\n\
 python3 /opt/threat-scanning/datastore-attacher/targetPoller/main.py "$@"' \
 > /usr/local/bin/target-poller && chmod +x /usr/local/bin/target-poller
 
+RUN echo '#!/bin/bash\n\
+python3 -m report_uploader.cli "$@"' \
+> /usr/local/bin/report-uploader && chmod +x /usr/local/bin/report-uploader
+
 # Default command
 CMD ["/bin/bash"]

@@ -241,8 +241,8 @@ func (in *ScanInstance) GetInstanceID() string {
 	return in.Labels["trilio.io/instance-id"]
 }
 
-// GetBackupTargetUID returns the backup target UID from labels
-func (in *ScanInstance) GetBackupTargetUID() string {
+// GetBackupTargetName returns the backup target name from labels
+func (in *ScanInstance) GetBackupTargetName() string {
 	if in.Labels == nil {
 		return ""
 	}

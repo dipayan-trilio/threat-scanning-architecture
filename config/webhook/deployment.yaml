@@ -28,7 +28,7 @@ spec:
       # Init container generates certificates at startup (Trilio's approach)
       initContainers:
       - name: webhook-cert-init
-        image: eu.gcr.io/amazing-chalice-243510/threat-scanning-controller:latest
+        image: eu.gcr.io/amazing-chalice-243510/threatscanning/controller:v1.7
         imagePullPolicy: Always
         command:
         - /manager
@@ -44,7 +44,7 @@ spec:
             - ALL
       containers:
       - name: manager
-        image: eu.gcr.io/amazing-chalice-243510/threat-scanning-controller:latest
+        image: eu.gcr.io/amazing-chalice-243510/threatscanning/controller:v1.7
         imagePullPolicy: Always
         command:
         - /manager
@@ -54,6 +54,18 @@ spec:
         - --webhook-cert-dir=/tmp/k8s-webhook-server/serving-certs
         - --leader-elect=true
         env:
+        - name: POSTGRES_HOST
+          value: "postgres-service.threat-scanning-system.svc.cluster.local"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_USER
+          value: "postgres"
+        - name: POSTGRES_PASSWORD
+          value: "postgres123"
+        - name: POSTGRES_DASHBOARD_DATABASE
+          value: "soc_dashboard"
+        - name: POSTGRES_CACHE_DATABASE
+          value: "soc_cache"
         - name: INSTALL_NAMESPACE
           value: "default"
         - name: PRODUCTION
@@ -69,11 +81,9 @@ spec:
         - name: RELATED_IMAGE_REDIS
           value: "redis:7-alpine"
         - name: TARGET_POLLING_DISABLED
-          value: "true"
+          value: "false"
         - name: TARGET_POLLING_CRON
-          value: "2 * * * *"
-        - name: DATABASE_URL
-          value: "sqlite+aiosqlite:///./scan_analysis.db"
+          value: "10 * * * *"
         ports:
         - containerPort: 9443
           name: webhook

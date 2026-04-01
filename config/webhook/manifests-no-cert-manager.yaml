@@ -53,7 +53,7 @@ spec:
       # Init container generates certificates at startup (Trilio's approach)
       initContainers:
       - name: webhook-cert-init
-        image: eu.gcr.io/amazing-chalice-243510/threatscanning/controller:v1.6
+        image: eu.gcr.io/amazing-chalice-243510/threatscanning/controller:v1.9
         imagePullPolicy: Always
         command:
         - /manager
@@ -69,7 +69,7 @@ spec:
             - ALL
       containers:
       - name: manager
-        image: eu.gcr.io/amazing-chalice-243510/threatscanning/controller:v1.6
+        image: eu.gcr.io/amazing-chalice-243510/threatscanning/controller:v1.9
         imagePullPolicy: Always
         command:
         - /manager
@@ -79,26 +79,42 @@ spec:
         - --webhook-cert-dir=/tmp/k8s-webhook-server/serving-certs
         - --leader-elect=true
         env:
+        - name: SCAN_JOB_TIMEOUT_SECONDS
+          value: "7200"
+        - name: POSTGRES_HOST
+          value: "postgres-svc.postgres.svc.cluster.local"
+        - name: IGNORE_RECENT_UPDATES_MINUTES
+          value: "2"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_USER
+          value: "admin"
+        - name: POSTGRES_PASSWORD
+          value: "changeme"
+        - name: POSTGRES_DASHBOARD_DATABASE
+          value: "soc_dashboard"
+        - name: POSTGRES_CACHE_DATABASE
+          value: "soc_cache"
         - name: INSTALL_NAMESPACE
           value: "default"
         - name: PRODUCTION
           value: "false"
         - name: RELATED_IMAGE_VALIDATOR
-          value: "eu.gcr.io/amazing-chalice-243510/threatscanning/datastore-attacher:v9.5"
+          value: "eu.gcr.io/amazing-chalice-243510/threatscanning/datastore-attacher:v9.7"
         - name: RELATED_IMAGE_POLLER
-          value: "eu.gcr.io/amazing-chalice-243510/threatscanning/datastore-attacher:v9.5"
+          value: "eu.gcr.io/amazing-chalice-243510/threatscanning/datastore-attacher:v9.7"
         - name: RELATED_IMAGE_SCANNER
-          value: "eu.gcr.io/amazing-chalice-243510/threatscanning/scan-engine:v1.6"
+          value: "eu.gcr.io/amazing-chalice-243510/threatscanning/scan-engine:v2.0"
         - name: RELATED_IMAGE_JANITOR
           value: "eu.gcr.io/amazing-chalice-243510/threatscanning/janitor:v1.2"
         - name: RELATED_IMAGE_REDIS
           value: "redis:7-alpine"
         - name: TARGET_POLLING_DISABLED
-          value: "true"
+          value: "false"
         - name: TARGET_POLLING_CRON
-          value: "2 * * * *"
-        - name: DATABASE_URL
-          value: "sqlite+aiosqlite:///./scan_analysis.db"
+          value: "*/2 * * * *"
+        # - name: DATABASE_URL
+        #   value: "sqlite+aiosqlite:///./scan_analysis.db"
         ports:
         - containerPort: 9443
           name: webhook

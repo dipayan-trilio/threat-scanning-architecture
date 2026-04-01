@@ -38,8 +38,12 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;delete;update
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups="admissionregistration.k8s.io",resources=validatingwebhookconfigurations,verbs=get;list;update
+// +kubebuilder:rbac:groups="admissionregistration.k8s.io",resources=mutatingwebhookconfigurations,verbs=get;list;update
 
 // Reconcile will be executed on every change for ScanInstance API resource
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -222,7 +226,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 
 		// Check if job is stuck
-		if helpers.IsJobPendingDeadlineExceeded(preScanJob) {
+		if helpers.IsJobPendingDeadlineExceeded(preScanJob, 0) { // 0 = use default timeout
 			// Check idempotency - only update if no failed condition exists
 			if !scanInstance.HasCondition(v1.PreScan, v1.Failed) {
 				if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.PreScan, v1.Failed,

@@ -29,11 +29,30 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - secrets
+  - pods
   verbs:
   - get
   - list
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - update
   - watch
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - mutatingwebhookconfigurations
+  - validatingwebhookconfigurations
+  verbs:
+  - get
+  - list
+  - update
 - apiGroups:
   - apps
   resources:
@@ -49,6 +68,7 @@ rules:
 - apiGroups:
   - batch
   resources:
+  - cronjobs
   - jobs
   verbs:
   - create

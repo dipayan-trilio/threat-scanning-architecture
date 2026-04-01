@@ -9,7 +9,7 @@ spec:
   objectStoreCredentials:
     url: https://api.minio.k8strilio.net
     region: us-east-1
-    bucketName: shiwam-test
+    bucketName: dipayan
     credentialSecret:
       name: minio-target-secret
       namespace: default

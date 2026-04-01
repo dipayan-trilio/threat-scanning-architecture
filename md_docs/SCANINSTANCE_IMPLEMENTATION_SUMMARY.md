@@ -19,7 +19,7 @@ Created a comprehensive Custom Resource Definition with:
 **Helper Methods:**
 - `LastMatchingScanInstanceCondition()`: Find matching condition
 - `HasVMWorkload()`: Check if scan has VM workload
-- `GetInstanceID()`, `GetBackupTargetUID()`, etc.: Label accessors
+- `GetInstanceID()`, `GetBackupTargetName()`, etc.: Label accessors
 
 ### 2. ScanInstance Controller (`controllers/scaninstance/`)
 

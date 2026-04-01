@@ -28,7 +28,7 @@ spec:
   resources:
     requests:
       storage: 10Gi
-  # storageClassName: standard   # uncomment and set your storageclass if needed
+  storageClassName: csi-gce-pd   # uncomment and set your storageclass if needed
 
 ---
 apiVersion: apps/v1
@@ -56,6 +56,9 @@ spec:
           envFrom:
             - secretRef:
                 name: postgres-secret
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data

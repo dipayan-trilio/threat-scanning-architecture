@@ -113,6 +113,19 @@ func (r *Reconciler) cleanupScanInstanceResources(ctx context.Context, scanInsta
 		r.Log.Infof("Deleted scan configmap: %s", configMapName)
 	}
 
+	// Delete scan secret if exists
+	secretName := helpers.GetScanInstanceResourceName(internal.ScanInstanceScanSecretPrefix, scanInstance.Name)
+	secret := &corev1.Secret{}
+	if err := r.Client.Get(ctx, types.NamespacedName{
+		Namespace: internal.GetInstallNamespace(),
+		Name:      secretName,
+	}, secret); err == nil {
+		if err := r.Client.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("error deleting scan secret: %w", err)
+		}
+		r.Log.Infof("Deleted scan secret: %s", secretName)
+	}
+
 	// Delete Redis deployment if exists
 	redisDeployName := helpers.GetScanInstanceResourceName(internal.ScanInstanceRedisDeployPrefix, scanInstance.Name)
 	redisDeploy := &appsv1.Deployment{}
@@ -261,9 +274,9 @@ func (r *Reconciler) updateScanInstanceCondition(ctx context.Context, scanInstan
 }
 
 // createScanJob creates a scan job for the given ScanInstance
-func (r *Reconciler) createScanJob(ctx context.Context, scanInstance *v1.ScanInstance) (*batchv1.Job, error) {
+func (r *Reconciler) createScanJob(ctx context.Context, scanInstance *v1.ScanInstance, secretName string) (*batchv1.Job, error) {
 	// Get scan job spec
-	scanJob, err := helpers.GetScanJob(ctx, r.Client, scanInstance)
+	scanJob, err := helpers.GetScanJob(ctx, r.Client, scanInstance, secretName)
 	if err != nil {
 		return nil, err
 	}
@@ -460,6 +473,17 @@ func (r *Reconciler) processScanJobStatus(ctx context.Context, scanInstance, ori
 			r.Recorder.Eventf(scanInstance, corev1.EventTypeNormal, "ScanCompleted",
 				"Scan completed successfully for ScanInstance: %s", scanInstance.Name)
 
+			// Set report path in status before marking as completed
+			reportPath := helpers.GetReportPath(scanInstance)
+			if scanInstance.Status.Report != reportPath {
+				scanInstance.Status.Report = reportPath
+				if err := r.Client.Status().Update(ctx, scanInstance); err != nil {
+					log.WithError(err).Error("Failed to update report path in status")
+					return ctrl.Result{}, fmt.Errorf("failed to update report path: %w", err)
+				}
+				log.Infof("Updated report path in status: %s", reportPath)
+			}
+
 			// Mark entire ScanInstance as completed
 			if uErr := r.updateScanInstanceStatus(ctx, scanInstance, originalScanInstance, v1.ScanCompleted); uErr != nil {
 				return ctrl.Result{}, uErr
@@ -529,7 +553,7 @@ func (r *Reconciler) processScanJobStatus(ctx context.Context, scanInstance, ori
 		}
 
 		// Check if job is stuck
-		if helpers.IsJobPendingDeadlineExceeded(scanJob) {
+		if helpers.IsJobPendingDeadlineExceeded(scanJob, internal.GetScanJobTimeoutSeconds()) {
 			// Check idempotency - only update if no failed condition exists
 			if !scanInstance.HasCondition(v1.Scanning, v1.Failed) {
 				if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.Scanning, v1.Failed,
@@ -620,8 +644,47 @@ func (r *Reconciler) reconcileScanPhase(ctx context.Context, scanInstance, origi
 			"Scan configmap %s created for ScanInstance: %s", scanConfigMap.Name, scanInstance.Name)
 		log.Infof("Created scan configmap: %s", scanConfigMap.Name)
 
-		// Create scan job
-		newScanJob, err := r.createScanJob(ctx, scanInstance)
+		// Create scan secret with PostgreSQL credentials
+		scanSecret, err := helpers.GetScanSecret(scanInstance)
+		if err != nil {
+			r.Log.WithError(err).Error("error occurred while creating scan secret spec")
+			if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.Scanning, v1.Failed,
+				fmt.Sprintf("Failed to create scan secret: %v", err)); uErr != nil {
+				return ctrl.Result{}, uErr
+			}
+			if uErr := r.updateScanInstanceStatus(ctx, scanInstance, originalScanInstance, v1.ScanFailed); uErr != nil {
+				return ctrl.Result{}, uErr
+			}
+			return ctrl.Result{}, err
+		}
+
+		// Set owner reference for secret
+		if err := ctrl.SetControllerReference(scanInstance, scanSecret, r.Scheme); err != nil {
+			r.Log.WithError(err).Error("error occurred while setting owner reference for scan secret")
+			return ctrl.Result{}, err
+		}
+
+		// Create the secret
+		if err := r.Client.Create(ctx, scanSecret); err != nil {
+			if !apierrors.IsAlreadyExists(err) {
+				r.Log.WithError(err).Error("error occurred while creating scan secret")
+				if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.Scanning, v1.Failed,
+					fmt.Sprintf("Failed to create scan secret: %v", err)); uErr != nil {
+					return ctrl.Result{}, uErr
+				}
+				if uErr := r.updateScanInstanceStatus(ctx, scanInstance, originalScanInstance, v1.ScanFailed); uErr != nil {
+					return ctrl.Result{}, uErr
+				}
+				return ctrl.Result{}, err
+			}
+		}
+
+		r.Recorder.Eventf(scanInstance, corev1.EventTypeNormal, "ScanSecretCreated",
+			"Scan secret %s created for ScanInstance: %s", scanSecret.Name, scanInstance.Name)
+		log.Infof("Created scan secret: %s", scanSecret.Name)
+
+		// Create scan job (secret name is passed for envFrom)
+		newScanJob, err := r.createScanJob(ctx, scanInstance, scanSecret.Name)
 		if err != nil {
 			r.Log.WithError(err).Error("error occurred while creating scan job")
 			if uErr := r.updateScanInstanceCondition(ctx, scanInstance, originalScanInstance, v1.Scanning, v1.Failed,

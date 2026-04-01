@@ -451,7 +451,7 @@ func (r *Reconciler) reconcileValidationJob(ctx context.Context, newTarget, orig
 
 	if newTarget.Status.Status != v1.Available {
 		specificReason := ""
-		if helpers.IsJobPendingDeadlineExceeded(validationJob) {
+		if helpers.IsJobPendingDeadlineExceeded(validationJob, 0) { // 0 = use default timeout
 			status = v1.Unavailable
 			operationStatus = v1.Failed
 			eventReason = "ValidationFailed"
