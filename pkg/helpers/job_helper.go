@@ -313,33 +313,39 @@ func GetJobStatus(job *batchv1.Job) v1.Status {
 	if job.Status.Succeeded > 0 {
 		return v1.Completed
 	}
-	
+
 	// Job is still in progress if it has active pods or failed attempts below backoff limit
 	if job.Status.Active > 0 {
 		return v1.InProgress
 	}
-	
+
 	// If there are failed attempts but no Active condition or Failed condition,
 	// the job is likely retrying (between attempts)
 	if job.Status.Failed > 0 {
 		return v1.InProgress
 	}
-	
+
 	return v1.InProgress
 }
 
 // GetJobStatusWithPodCheck returns the status of a job by checking pod states for error conditions
-// This is more accurate than just checking job status as it can detect CrashLoopBackOff, ImagePullBackOff, etc.
+// This function primarily relies on GetJobStatus() which checks the authoritative JobFailed condition
+// Pod checks are used for early detection of permanent infrastructure/configuration errors
+// This prevents waiting through multiple timeout periods (e.g., 3 retries × 1 hour = 3 hours)
+// for errors that will never succeed (image pull failures, config errors)
 func GetJobStatusWithPodCheck(ctx context.Context, cl client.Client, job *batchv1.Job) v1.Status {
-	// First check the job-level status
+	// First check the job-level status (checks JobFailed condition)
+	// This is the authoritative source - Kubernetes sets JobFailed when backoff limit is exhausted
 	jobStatus := GetJobStatus(job)
 
-	// If job is already completed or failed, return that
+	// If job is already completed or failed (per JobFailed condition), return that
 	if jobStatus == v1.Completed || jobStatus == v1.Failed {
 		return jobStatus
 	}
 
-	// For in-progress jobs, check pod status to detect errors early
+	// For in-progress jobs, check pods for permanent infrastructure/configuration errors
+	// This allows failing fast instead of waiting through multiple timeout cycles
+	// Example: 3 retries × 1 hour timeout = 3 hours wasted on an ImagePullBackOff error
 	podList := &corev1.PodList{}
 	err := cl.List(ctx, podList, client.InNamespace(job.Namespace), client.MatchingLabels{
 		"job-name": job.Name,
@@ -349,44 +355,42 @@ func GetJobStatusWithPodCheck(ctx context.Context, cl client.Client, job *batchv
 		return jobStatus
 	}
 
-	// Check pod statuses for error conditions
+	// Check ONLY currently active pods (not failed pods from previous retry attempts)
 	for _, pod := range podList.Items {
-		// Check pod phase
+		// Skip pods from previous retry attempts
 		if pod.Status.Phase == corev1.PodFailed {
-			return v1.Failed
-		}
-		if pod.Status.Phase == corev1.PodSucceeded {
-			return v1.Completed
+			continue
 		}
 
-		// Check container statuses for error states
-		for _, containerStatus := range pod.Status.ContainerStatuses {
-			// Check for waiting states that indicate failure
-			if containerStatus.State.Waiting != nil {
-				waiting := containerStatus.State.Waiting
-				// These are error states that won't recover
-				if waiting.Reason == "CrashLoopBackOff" ||
-					waiting.Reason == "ImagePullBackOff" ||
-					waiting.Reason == "ErrImagePull" ||
-					waiting.Reason == "CreateContainerConfigError" ||
-					waiting.Reason == "InvalidImageName" {
-					return v1.Failed
-				}
-			}
-
-			// Check for terminated states with non-zero exit code
-			if containerStatus.State.Terminated != nil {
-				terminated := containerStatus.State.Terminated
-				if terminated.ExitCode != 0 {
-					return v1.Failed
-				}
-				if terminated.Reason == "Error" {
-					return v1.Failed
+		// Only check Pending pods for permanent infrastructure/configuration errors
+		// - If pod is Running: let it run, job will handle failures
+		// - If pod is Succeeded: job will mark itself as Completed, trust GetJobStatus()
+		// - If pod is Pending: check for permanent errors to fail fast
+		if pod.Status.Phase == corev1.PodPending {
+			for _, containerStatus := range pod.Status.ContainerStatuses {
+				if containerStatus.State.Waiting != nil {
+					waiting := containerStatus.State.Waiting
+					// Check for PERMANENT infrastructure/configuration errors
+					// These will fail on ALL retry attempts, so fail fast
+					if waiting.Reason == "ImagePullBackOff" ||
+						waiting.Reason == "ErrImagePull" ||
+						waiting.Reason == "InvalidImageName" ||
+						waiting.Reason == "CreateContainerConfigError" {
+						// Permanent errors: no point in waiting through timeout cycles
+						// Fail immediately to save time (e.g., 3 retries × 1 hour = 3 hours)
+						return v1.Failed
+					}
+					// Note: CrashLoopBackOff is NOT included because:
+					// - It's an application runtime error, not infrastructure
+					// - The application might succeed on a subsequent retry attempt
+					// - Let the job's backoff limit handle it naturally
 				}
 			}
 		}
 	}
 
+	// Default: trust the job status from GetJobStatus()
+	// Let Kubernetes handle application failures and transient errors via backoff limit
 	return jobStatus
 }
 
@@ -1100,16 +1104,25 @@ func GetScanJob(ctx context.Context, cl client.Client, scanInstance *v1.ScanInst
 				Value: redisURL,
 			},
 		},
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("500m"),
-				corev1.ResourceMemory: resource.MustParse("512Mi"),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("2000m"),
-				corev1.ResourceMemory: resource.MustParse("2Gi"),
-			},
-		},
+	}
+
+	// Set resource requests
+	scanContainer.Resources.Requests = corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse(internal.GetScanJobCPURequest()),
+		corev1.ResourceMemory: resource.MustParse(internal.GetScanJobMemoryRequest()),
+	}
+
+	// Set resource limits only if specified via environment variables
+	cpuLimit := internal.GetScanJobCPULimit()
+	memoryLimit := internal.GetScanJobMemoryLimit()
+	if cpuLimit != "" || memoryLimit != "" {
+		scanContainer.Resources.Limits = corev1.ResourceList{}
+		if cpuLimit != "" {
+			scanContainer.Resources.Limits[corev1.ResourceCPU] = resource.MustParse(cpuLimit)
+		}
+		if memoryLimit != "" {
+			scanContainer.Resources.Limits[corev1.ResourceMemory] = resource.MustParse(memoryLimit)
+		}
 	}
 
 	// CRITICAL: Always add privileged security context for scan jobs

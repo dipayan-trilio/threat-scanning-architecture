@@ -53,7 +53,7 @@ spec:
       # Init container generates certificates at startup (Trilio's approach)
       initContainers:
       - name: webhook-cert-init
-        image: eu.gcr.io/amazing-chalice-243510/threatscanning/controller:v1.9
+        image: eu.gcr.io/amazing-chalice-243510/threatscanning/controller:v2.5
         imagePullPolicy: Always
         command:
         - /manager
@@ -69,7 +69,7 @@ spec:
             - ALL
       containers:
       - name: manager
-        image: eu.gcr.io/amazing-chalice-243510/threatscanning/controller:v1.9
+        image: eu.gcr.io/amazing-chalice-243510/threatscanning/controller:v2.5
         imagePullPolicy: Always
         command:
         - /manager
@@ -79,8 +79,14 @@ spec:
         - --webhook-cert-dir=/tmp/k8s-webhook-server/serving-certs
         - --leader-elect=true
         env:
+        - name: SCANJOB_CPU_REQUEST
+          value: "1000m"
+        - name: SCANJOB_MEMORY_REQUEST
+          value: "1Gi"
         - name: SCAN_JOB_TIMEOUT_SECONDS
           value: "7200"
+        - name: MAX_CONCURRENT_SCANS
+          value: "3"
         - name: POSTGRES_HOST
           value: "postgres-svc.postgres.svc.cluster.local"
         - name: IGNORE_RECENT_UPDATES_MINUTES

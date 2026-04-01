@@ -3,6 +3,7 @@ package scaninstance
 import (
 	"context"
 	"fmt"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -604,6 +605,29 @@ func (r *Reconciler) reconcileScanPhase(ctx context.Context, scanInstance, origi
 			return r.reconcileRedisDeployment(ctx, scanInstance, originalScanInstance)
 		}
 
+		// Check concurrency limit before creating scan resources
+		canStart, activeCount, err := r.canStartNewScan(ctx)
+		if err != nil {
+			r.Log.WithError(err).Error("error checking scan concurrency limit")
+			return ctrl.Result{}, err
+		}
+
+		if !canStart {
+			maxConcurrent := internal.GetMaxConcurrentScans()
+			log.Infof("Concurrent scan limit reached (%d/%d active). Requeuing after 1 minute...",
+				activeCount, maxConcurrent)
+
+			r.Recorder.Eventf(scanInstance, corev1.EventTypeNormal, "ScanQueued",
+				"Waiting for scan slot (concurrent limit: %d, active: %d)",
+				maxConcurrent, activeCount)
+
+			// Requeue after 1 minute to check again
+			return ctrl.Result{RequeueAfter: time.Minute}, nil
+		}
+
+		log.Infof("Starting scan job (active scans: %d, max: %d)",
+			activeCount, internal.GetMaxConcurrentScans())
+
 		// Redis is ready, proceed to create configmap and scan job
 		// Create scan configmap
 		scanConfigMap, err := helpers.GetScanConfigMap(scanInstance)
@@ -792,4 +816,53 @@ func (r *Reconciler) createJanitorJob(ctx context.Context, scanInstance *v1.Scan
 
 	log.Infof("Created janitor job: %s", janitorJob.Name)
 	return nil
+}
+
+// countActiveScanJobs counts the number of active (running) scan jobs across all ScanInstances
+// Active means scan jobs that are currently in InProgress state
+func (r *Reconciler) countActiveScanJobs(ctx context.Context) (int, error) {
+	// List all scan jobs managed by this controller
+	jobList := &batchv1.JobList{}
+	if err := r.Client.List(ctx, jobList,
+		client.MatchingLabels{
+			"app.kubernetes.io/managed-by": internal.ManagedBy,
+			"app.kubernetes.io/component":  "scan",
+		},
+		client.InNamespace(internal.GetInstallNamespace()),
+	); err != nil {
+		return 0, fmt.Errorf("failed to list scan jobs: %w", err)
+	}
+
+	// Count jobs that are actively running (not completed or failed)
+	activeCount := 0
+	for i := range jobList.Items {
+		job := &jobList.Items[i]
+		jobStatus := helpers.GetJobStatus(job)
+		if jobStatus == v1.InProgress {
+			activeCount++
+		}
+	}
+
+	return activeCount, nil
+}
+
+// canStartNewScan checks if we can start a new scan job based on concurrency limits
+// Returns: (canStart bool, activeCount int, error)
+// - canStart: true if we can start a new scan, false if limit reached
+// - activeCount: current number of active scan jobs
+// - error: any error encountered while checking
+func (r *Reconciler) canStartNewScan(ctx context.Context) (bool, int, error) {
+	maxConcurrent := internal.GetMaxConcurrentScans()
+
+	// 0 means unlimited
+	if maxConcurrent == 0 {
+		return true, 0, nil
+	}
+
+	activeCount, err := r.countActiveScanJobs(ctx)
+	if err != nil {
+		return false, 0, err
+	}
+
+	return activeCount < maxConcurrent, activeCount, nil
 }

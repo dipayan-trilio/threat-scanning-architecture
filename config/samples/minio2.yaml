@@ -1,7 +1,7 @@
 apiVersion: threatscanning.trilio.io/v1
 kind: Target
 metadata:
-  name: minio-target
+  name: minio-target-1
 spec:
   targetType: TVK
   type: ObjectStore

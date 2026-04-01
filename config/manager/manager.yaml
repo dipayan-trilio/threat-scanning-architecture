@@ -40,6 +40,18 @@ spec:
         env:
         - name: SCAN_JOB_TIMEOUT_SECONDS
           value: "1500"
+        - name: MAX_CONCURRENT_SCANS
+          value: "5"
+        - name: SCANJOB_CPU_REQUEST
+          value: "500m"
+        - name: SCANJOB_MEMORY_REQUEST
+          value: "512Mi"
+        # Optional: Set resource limits for scan jobs
+        # If not set, scan jobs will have no resource limits
+        # - name: SCANJOB_CPU_LIMIT
+        #   value: "2000m"
+        # - name: SCANJOB_MEMORY_LIMIT
+        #   value: "2Gi"
         - name: POSTGRES_HOST
           value: "postgres-service.threat-scanning-system.svc.cluster.local"
         - name: POSTGRES_PORT

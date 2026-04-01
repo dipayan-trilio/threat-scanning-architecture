@@ -120,6 +120,33 @@ const (
 	// DefaultScanJobTimeoutSeconds is the default timeout for scan jobs (25 minutes)
 	DefaultScanJobTimeoutSeconds = 1500
 
+	// MaxConcurrentScansEnvVar is the environment variable name for max concurrent scan jobs
+	MaxConcurrentScansEnvVar = "MAX_CONCURRENT_SCANS"
+
+	// DefaultMaxConcurrentScans is the default max concurrent scans if env var not set
+	// 0 = unlimited (no concurrency limit)
+	DefaultMaxConcurrentScans = 5
+
+	// ScanJobCPURequestEnvVar is the environment variable name for scan job CPU request
+	ScanJobCPURequestEnvVar = "SCANJOB_CPU_REQUEST"
+
+	// DefaultScanJobCPURequest is the default CPU request for scan jobs
+	DefaultScanJobCPURequest = "500m"
+
+	// ScanJobMemoryRequestEnvVar is the environment variable name for scan job memory request
+	ScanJobMemoryRequestEnvVar = "SCANJOB_MEMORY_REQUEST"
+
+	// DefaultScanJobMemoryRequest is the default memory request for scan jobs
+	DefaultScanJobMemoryRequest = "512Mi"
+
+	// ScanJobCPULimitEnvVar is the environment variable name for scan job CPU limit
+	// If not set, no CPU limit will be applied
+	ScanJobCPULimitEnvVar = "SCANJOB_CPU_LIMIT"
+
+	// ScanJobMemoryLimitEnvVar is the environment variable name for scan job memory limit
+	// If not set, no memory limit will be applied
+	ScanJobMemoryLimitEnvVar = "SCANJOB_MEMORY_LIMIT"
+
 	// SecretKeyName is the key name for secret key in credential secret
 	SecretKeyName = "secretKey"
 
@@ -350,6 +377,46 @@ func GetScanJobTimeoutSeconds() int64 {
 		}
 	}
 	return DefaultScanJobTimeoutSeconds
+}
+
+// GetMaxConcurrentScans returns the max concurrent scans from environment variable or default
+// Returns 0 for unlimited concurrent scans
+func GetMaxConcurrentScans() int {
+	if maxStr := os.Getenv(MaxConcurrentScansEnvVar); maxStr != "" {
+		var max int
+		if _, err := fmt.Sscanf(maxStr, "%d", &max); err == nil && max >= 0 {
+			return max
+		}
+	}
+	return DefaultMaxConcurrentScans
+}
+
+// GetScanJobCPURequest returns the scan job CPU request from environment variable or default
+func GetScanJobCPURequest() string {
+	if cpu := os.Getenv(ScanJobCPURequestEnvVar); cpu != "" {
+		return cpu
+	}
+	return DefaultScanJobCPURequest
+}
+
+// GetScanJobMemoryRequest returns the scan job memory request from environment variable or default
+func GetScanJobMemoryRequest() string {
+	if memory := os.Getenv(ScanJobMemoryRequestEnvVar); memory != "" {
+		return memory
+	}
+	return DefaultScanJobMemoryRequest
+}
+
+// GetScanJobCPULimit returns the scan job CPU limit from environment variable
+// Returns empty string if not set (no limit will be applied)
+func GetScanJobCPULimit() string {
+	return os.Getenv(ScanJobCPULimitEnvVar)
+}
+
+// GetScanJobMemoryLimit returns the scan job memory limit from environment variable
+// Returns empty string if not set (no limit will be applied)
+func GetScanJobMemoryLimit() string {
+	return os.Getenv(ScanJobMemoryLimitEnvVar)
 }
 
 // GetRecommendedLabels returns the recommended labels
